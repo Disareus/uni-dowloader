@@ -1,49 +1,117 @@
-# AniUA Downloader для Android (Java)
+# AniUA Downloader для Android
 
-Нативний Android-додаток на мові **Java** для пошуку, аналізу та завантаження серіалів, аніме та фільмів з українських медіа-ресурсів (**UAKino**, **Anitube**), балансерів (**Ashdi**, **Tortuga**, **MoonAnime**) та прямого перегляду через вбудований медіаплеєр **ExoPlayer (Media3)**.
+[![Kotlin](https://img.shields.io/badge/Kotlin-1.9.24-7F52FF.svg?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![Android](https://img.shields.io/badge/Platform-Android%207.0%2B%20(API%2024%2B)-3DDC84.svg?logo=android&logoColor=white)](https://developer.android.com)
+[![Media3](https://img.shields.io/badge/ExoPlayer-Media3%201.3.1-FF5722.svg)](https://developer.android.com/media/media3)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
----
-
-## 1. Архітектура проєкту
-
-Проєкт побудований за модульною схемою:
-- **`:app`** — головний модуль застосунку (UI на Material 3, RecyclerView, фонова служба завантаження `DownloadService`, медіаплеєр `PlayerActivity`, парсери `ExtractorRouter`, `UaKinoExtractor`, `AnitubeExtractor`, `AshdiExtractor`).
-- **`:security`** — окрема бібліотека захисту та безпеки, спроектована та погоджена двома автономними суб-агентами безпеки (`SecurityArchitectAgent` та `CryptoNetworkSecurityAgent`).
+Сучасний нативний Android-додаток, написаний на **100% Kotlin**, для пошуку, аналізу, перегляду та швидкого завантаження аніме, серіалів і фільмів з українських медіа-ресурсів (**UAKino**, **AniTube**) та популярних відеобалансерів (**Fenix Player**, **Ashdi**, **Tortuga**, **MoonAnime**, **Sibnet**).
 
 ---
 
-## 2. Комплексна підсистема захисту (Security & App Hardening)
+## 🌟 Основні можливості
 
-### 2.1. Багаторівнева модель реагування (Tiered Risk Model)
-- **Рівень 2 (CRITICAL_ATTACK)**:
-  - *Тригери*: активний налагоджувач (`Debug.isDebuggerConnected()`, `TracerPid > 0`), фреймворки динамічного аналізу (**Frida**, **Xposed**, **LSPosed**), підміна цифрового підпису APK (`IntegrityDetector`).
-  - *Реакція*: **Fail-Closed**. Мережевий стек `TamperDetectionInterceptor` обриває всі з'єднання фіктивною системною помилкою (`Connection reset by peer`), `SecureStorageManager` занулює буфери в RAM і безповоротно видаляє майстер-ключ із апаратного чіпа `AndroidKeyStore`, процес додатку негайно самоліквідується (`Process.killProcess()`).
-- **Рівень 1 (ENVIRONMENT_RISK)**:
-  - *Тригери*: наявність `su` бінарників, Magisk / KernelSU / APatch, RW-монтування `/system`, `test-keys`, емулятори (QEMU, BlueStacks, LDPlayer).
-  - *Реакція*: **Guarded Mode**. Додаток зберігає працездатність для легітимних power-users, але ізолює всі завантажені файли у захищений App-Specific Sandbox (`context.getExternalFilesDir()`) із забороною незашифрованого спільного експорту.
-
-### 2.2. Мережева безпека та захист від перехоплення
-1. **Network Security Config** (`network_security_config.xml`):
-   - Повна заборона Cleartext HTTP трафіку (`cleartextTrafficPermitted="false"`).
-   - Довіра виключно системним сертифікатам (`system CAs`). Користувацькі сертифікати (Burp Suite, Charles, mitmproxy) автоматично відкидаються ОС Android.
-2. **Двоешелонний Certificate Pinning (Dual-Layer Pinning)**:
-   - *Ешелон 1*: Офіційний `okhttp3.CertificatePinner`.
-   - *Ешелон 2*: Кастомний `DualLayerPinningInterceptor` перевіряє SPKI SHA-256 хеш безпосередньо з TLS `Handshake`, що унеможливлює обхід стандартними публічними скриптами Frida.
-3. **DNS-over-HTTPS (DoH)**:
-   - Безпечний резолв доменів через Cloudflare (1.1.1.1) та Google (8.8.8.8) з прямими bootstrap-IP для захисту від блокувань провайдерами (ISP Spoofing / DNS Poisoning).
-4. **Захист від витоку токенів**:
-   - `SecurityHeadersInterceptor` примусово знімає чутливі авторизаційні заголовки при переході на зовнішні відеохостинги та генерує валідні `Referer` і `User-Agent`.
-
-### 2.3. Криптографія та сховище
-- **Апаратний Keystore**: `AES-256-GCM` із пріоритетом на апаратний чіп **StrongBox Keymaster** та fallback на TEE.
-- **EncryptedSharedPreferences**: безпечне зберігання налаштувань та сесій.
-- **Захист від Path Traversal**: `DownloadSecurityManager` нормалізує Unicode (NFKC), санітизує імена файлів від `..`, нуль-байтів та перевіряє канонічний шлях (`canonicalPath.startsWith(canonicalBase)`).
+- **100% Kotlin & Coroutines**: Чиста реактивна архітектура на базі `StateFlow`, `lifecycleScope` та структурованого паралелізму без блокування UI.
+- **Підтримка відеобалансерів**:
+  - 🪶 **Fenix Player (`fenixplay.xyz`)**: Повна інтеграція з Playback API, авторизація JWT-токенів доступу до CDN, підтримка fragmented MP4 (fMP4) та автоматичне апаратне склеювання розділених аудіо- та відео-доріжок через `MediaMuxer`.
+  - ⚡ **Ashdi**: Автоматичне видобування та розгортання multi-variant HLS потоків.
+  - 🐢 **Tortuga**: Розкодування прямих потоків плейлистів.
+  - 🌙 **MoonAnime**: Витягування HLS мастер-плейлистів із кастомними заголовками.
+  - 🌐 **Sibnet**: Прямий стрімінг та завантаження MP4-відео.
+- **HLS Segment Downloader із розшифруванням AES-128**:
+  - Багатопотокове скачування сегментів `.ts` та `.m4s`.
+  - Автоматичне розшифрування потоків із шифруванням AES-128 CBC/PKCS7 на льоту.
+  - Підтримка ініціалізаційних заголовків fMP4 (`#EXT-X-MAP`).
+  - Захист від завантаження битих HTML-сторінок або незавершених сесій (fail-fast перевірка MIME та розміру).
+- **Організація завантажень за папками**:
+  - Кожне аніме автоматично зберігається у власну підпапку з назвою студії озвучення:
+    `Movies/AniUA/{Назва Аніме} [{Студія озвучення}]/{Серія}.mp4`
+  - Повна сумісність зі Scoped Storage (Android 10–15) через MediaStore API.
+- **Вбудований відеоплеєр (ExoPlayer Media3)**:
+  - Прямий перегляд серій безпосередньо у додатку.
+  - Адаптивне перемикання бітрейту та вибір якості відео (1080p, 720p, 480p, 360p).
+  - Підтримка кастомних реферерів та User-Agent для захищених CDN.
+- **Темний інтерфейс у стилі Material 3**:
+  - Адаптований під OLED-екрани інтерфейс.
+  - Зручний вибір студій озвучення через інтерактивні чипи.
+  - Пакетне завантаження серій («Вибрати всі» / окремі епізоди).
+  - Моніторинг швидкості та прогресу у реальному часі.
 
 ---
 
-## 3. Як відкрити та запустити в Android Studio
+## 🛡️ Комплексний модуль безпеки (`:security`)
 
-1. Відкрийте **Android Studio** (Hedgehog, Iguana, Jellyfish або новішу).
-2. Оберіть **File -> Open...** та виберіть папку `downloadvideos/android`.
-3. Дочекайтеся завершення Gradle Sync.
-4. Оберіть конфігурацію запуску **app** та запустіть на пристрої або емуляторі (Run ▶).
+Додаток оснащений автономною підсистемою захисту та харденінгу:
+
+1. **Багаторівнева модель реагування (Tiered Threat Model)**:
+   - **CRITICAL_ATTACK**: Миттєве блокування при виявленні налагоджувачів (`Debug.isDebuggerConnected()`, `TracerPid`), хукінг-фреймворків (**Frida**, **Xposed**, **LSPosed**) або підробки цифрового підпису APK.
+   - **ENVIRONMENT_RISK**: Захищений режим роботи на рутованих пристроях (Magisk, KernelSU, APatch) або емуляторах із ізоляцією кешу.
+2. **Мережевий захист**:
+   - Повна заборона незахищеного Cleartext HTTP трафіку (`cleartextTrafficPermitted="false"`).
+   - Захист від витоку авторизаційних токенів при зверненні до зовнішніх CDN (`SecurityHeadersInterceptor`).
+   - Підтримка безпечного DNS-over-HTTPS (DoH) через Cloudflare та Google DNS.
+3. **Криптографія та Сховище**:
+   - Апаратне шифрування AES-256-GCM із використанням **AndroidKeyStore** (StrongBox / TEE).
+   - Захист від атак Path Traversal при збереженні файлів (перевірка канонічних шляхів та нормалізація Unicode).
+
+---
+
+## 📁 Структура проєкту
+
+```text
+AniUaDownloader/
+├── app/                                 # Головний модуль Android-додатку
+│   ├── src/main/java/ua/aniua/downloader/
+│   │   ├── extractor/                   # Парсери сайтів і відеобалансерів
+│   │   │   ├── AnitubeExtractor.kt      # Парсер AniTube
+│   │   │   ├── UaKinoExtractor.kt       # Парсер UAKino
+│   │   │   ├── FenixExtractor.kt        # Екстрактор Fenix Player
+│   │   │   ├── AshdiExtractor.kt        # Екстрактор Ashdi
+│   │   │   ├── TortugaExtractor.kt      # Екстрактор Tortuga
+│   │   │   ├── MoonAnimeExtractor.kt    # Екстрактор MoonAnime
+│   │   │   ├── GenericPlayerResolver.kt # Диспетчер резолву потоків
+│   │   │   └── HlsStreamResolver.kt     # Парсер HLS master-плейлистів
+│   │   ├── model/                       # Data-класи моделей даних
+│   │   ├── service/                     # Фонова служба та HlsSegmentDownloader
+│   │   └── ui/                          # Activities, Adapters, Views
+│   └── src/main/res/                    # Списки ресурсів, теми та розмітка
+├── security/                            # Окремий модуль безпеки та криптографії
+│   └── src/main/java/ua/security/
+│       ├── crypto/                      # Апаратний Keystore та SecureStorage
+│       ├── hardening/                   # Anti-Root, Anti-Debug, Anti-Frida
+│       ├── network/                     # DoH, безпечні перехоплювачі заголовків
+│       └── storage/                     # Scoped Storage безпека та MediaStore
+└── .github/workflows/                   # GitHub Actions автоматична збірка (CI)
+```
+
+---
+
+## 🚀 Як зібрати проєкт
+
+### Вимоги:
+- **JDK 17** (або новіша, наприклад JetBrains Runtime / OpenJDK 17)
+- **Android SDK** (API 34, Build Tools 34.0.0)
+
+### Збірка з командного рядка:
+```bash
+# Клонування репозиторію
+git clone https://github.com/<ваш-профіль>/AniUaDownloader.git
+cd AniUaDownloader
+
+# Збірка Debug APK
+./gradlew assembleDebug
+```
+Готовий APK буде створено за шляхом:
+`app/build/outputs/apk/debug/app-debug.apk`
+
+### Запуск в Android Studio:
+1. Запустіть **Android Studio**.
+2. Оберіть **File** ➔ **Open...** та виберіть папку `AniUaDownloader`.
+3. Дочекайтеся завершення **Gradle Sync**.
+4. Виберіть конфігурацію запуску **app** та натисніть кнопку **Run (▶)**.
+
+---
+
+## 📄 Ліцензія
+
+Цей проєкт поширюється під ліцензією [MIT](LICENSE).

@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">AniUA Downloader</string>
+    <string name="url_hint">Вставте посилання (UAKino, Anitube, Ashdi...)</string>
+    <string name="btn_analyze">Аналізувати</string>
+    <string name="btn_download_selected">Завантажити вибрані</string>
+    <string name="btn_select_all">Вибрати всі</string>
+    <string name="btn_deselect_all">Зняти вибір</string>
+    <string name="btn_open_downloads">Завантаження</string>
+    <string name="label_studios">Озвучення / Плеєр:</string>
+    <string name="label_episodes">Серії:</string>
+    <string name="label_qualities">Якість відео:</string>
+    <string name="label_format">Формат:</string>
+    <string name="status_ready">Готовий до роботи</string>
+    <string name="status_analyzing">Аналіз сторінки…</string>
+    <string name="status_downloading">Завантаження…</string>
+    <string name="error_empty_url">Будь ласка, введіть або вставте URL</string>
+    <string name="error_analysis_failed">Не вдалося проаналізувати посилання: %1$s</string>
+    <string name="error_no_episodes_selected">Виберіть хоча б одну серію</string>
+    <string name="channel_downloads_name">Завантаження відео</string>
+    <string name="channel_downloads_desc">Сповіщення про прогрес завантаження відеофайлів</string>
+    <string name="security_warning_title">Попередження безпеки</string>
+    <string name="security_warning_msg">Виявлено середовище підвищеного ризику (Root/Емулятор). Увімкнено захищений режим збереження файлів.</string>
+    <string name="security_critical_title">Порушення безпеки!</string>
+    <string name="security_critical_msg">Виявлено спробу модифікації або інструменти перехоплення. Роботу додатка зупинено з міркувань безпеки.</string>
+</resources>

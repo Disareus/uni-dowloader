@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- 
+      Базова конфігурація:
+      1. Забороняємо будь-який незашифрований (cleartext/HTTP) трафік.
+      2. Довіряємо виключно системним сертифікатам (system CAs).
+         Користувацькі сертифікати (user CAs) НЕ приймаються, що блокує перехоплення
+         через Charles, Burp Suite, mitmproxy без модифікації системи або рута.
+    -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!--
+      Домени офіційного API та бекенду:
+      Суворе вимагання TLS, заборона cleartext, вбудований Certificate Pinning.
+      SHA-256 хеші Subject Public Key Info (SPKI) первинного та бекап-сертифікатів.
+    -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">api.aniua.org</domain>
+        <domain includeSubdomains="true">auth.aniua.org</domain>
+        <pin-set expiration="2027-12-31">
+            <!-- Первинний пін (Primary SPKI SHA-256) -->
+            <pin digest="SHA-256">7HIpactkIAq2Y49orFOOQKurWxmmSFZhBCoQYcRhJ3Y=</pin>
+            <!-- Резервний пін (Backup SPKI SHA-256) обов'язковий за стандартом Android -->
+            <pin digest="SHA-256">k2ErWTSpWKuhPzczbxCcWFzOBU9UhesWhMkZZ0gowFE=</pin>
+        </pin-set>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!--
+      Домени відеострімінгу та сторонніх балансерів:
+      UAKino, Anitube, Ashdi, Tortuga, MoonAnime тощо.
+      Ці сервіси часто використовують Cloudflare або ротують сертифікати, тому
+      жорсткий піннінг в XML для них може призвести до відмови в обслуговуванні.
+      Але ми вимагаємо суворий HTTPS (cleartextTrafficPermitted="false")
+      і довіру тільки до системних центрів сертифікації.
+    -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">uakino.club</domain>
+        <domain includeSubdomains="true">anitube.in.ua</domain>
+        <domain includeSubdomains="true">ashdi.vip</domain>
+        <domain includeSubdomains="true">tortuga.wtf</domain>
+        <domain includeSubdomains="true">moonanime.art</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+
+    <!--
+      Налаштування для локальної розробки та налагодження:
+      Діють ТІЛЬКИ коли android:debuggable="true" у маніфесті (Debug збірки).
+      У Release збірках цей блок автоматично ігнорується ОС Android.
+    -->
+    <debug-overrides>
+        <trust-anchors>
+            <!-- Дозволяє перехоплювати трафік для дебагу розробником -->
+            <certificates src="user" />
+            <certificates src="system" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Базові мережеві дозволи -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Дозволи для збереження медіа (для Android 9 і нижче) -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <application
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:usesCleartextTraffic="false">
+        <!-- 
+          android:networkSecurityConfig підключає файл правил безпеки мережі.
+          android:usesCleartextTraffic="false" дублює заборону на рівні маніфесту.
+          android:allowBackup="false" запобігає витоку EncryptedSharedPreferences через adb backup.
+        -->
+    </application>
+
+</manifest>

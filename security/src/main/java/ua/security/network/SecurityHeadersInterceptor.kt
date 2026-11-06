@@ -66,7 +66,9 @@ class SecurityHeadersInterceptor : Interceptor {
             host.contains("uakino") -> "https://uakino.me/"
             host.contains("anitube") -> "https://anitube.in.ua/"
             host.contains("moonanime") -> "https://moonanime.art/"
+            host.contains("moon") -> "https://anitube.in.ua/"
             host.contains("fenix") -> "https://fenixplay.xyz/"
+            host.contains("peertube") -> "https://$host/"
             else -> null
         }
     }

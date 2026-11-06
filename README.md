@@ -5,7 +5,7 @@
 [![Media3](https://img.shields.io/badge/ExoPlayer-Media3%201.3.1-FF5722.svg)](https://developer.android.com/media/media3)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Сучасний нативний Android-додаток, написаний на **100% Kotlin**, для пошуку, аналізу, перегляду та швидкого завантаження аніме, серіалів і фільмів з українських медіа-ресурсів (**UAKino**, **AniTube**) та популярних відеобалансерів (**Fenix Player**, **Ashdi**, **Tortuga**, **MoonAnime**, **Sibnet**).
+Сучасний нативний Android-додаток, написаний на **100% Kotlin**, для пошуку, аналізу, перегляду та швидкого завантаження аніме, серіалів і фільмів з українських медіа-ресурсів (**UAKino**, **AniTube**) та популярних відеобалансерів (**Fenix Player**, **Ashdi**, **Tortuga**, **Moon**, **PeerTube**, **Sibnet**).
 
 ---
 
@@ -14,9 +14,10 @@
 - **100% Kotlin & Coroutines**: Чиста реактивна архітектура на базі `StateFlow`, `lifecycleScope` та структурованого паралелізму без блокування UI.
 - **Підтримка відеобалансерів**:
   - 🪶 **Fenix Player (`fenixplay.xyz`)**: Повна інтеграція з Playback API, авторизація JWT-токенів доступу до CDN, підтримка fragmented MP4 (fMP4) та автоматичне апаратне склеювання розділених аудіо- та відео-доріжок через `MediaMuxer`.
+  - 📺 **PeerTube (`peertube.in.ua`, інстанси Fediverse)**: Підтримка PeerTube REST API v1, вилучення multi-variant HLS master-потоків з розділеними аудіо-доріжками та прямих MP4-файлів.
+  - 🌙 **Moon (`moonanime.net`, `moonanime.art`)**: Двоступеневе декодування, витягування HLS мастер-плейлистів із кастомними заголовками.
   - ⚡ **Ashdi**: Автоматичне видобування та розгортання multi-variant HLS потоків.
   - 🐢 **Tortuga**: Розкодування прямих потоків плейлистів.
-  - 🌙 **MoonAnime**: Витягування HLS мастер-плейлистів із кастомними заголовками.
   - 🌐 **Sibnet**: Прямий стрімінг та завантаження MP4-відео.
 - **HLS Segment Downloader із розшифруванням AES-128**:
   - Багатопотокове скачування сегментів `.ts` та `.m4s`.
@@ -66,9 +67,10 @@ AniUaDownloader/
 │   │   │   ├── AnitubeExtractor.kt      # Парсер AniTube
 │   │   │   ├── UaKinoExtractor.kt       # Парсер UAKino
 │   │   │   ├── FenixExtractor.kt        # Екстрактор Fenix Player
+│   │   │   ├── PeerTubeExtractor.kt     # Екстрактор PeerTube
 │   │   │   ├── AshdiExtractor.kt        # Екстрактор Ashdi
 │   │   │   ├── TortugaExtractor.kt      # Екстрактор Tortuga
-│   │   │   ├── MoonAnimeExtractor.kt    # Екстрактор MoonAnime
+│   │   │   ├── MoonAnimeExtractor.kt    # Екстрактор Moon/MoonAnime
 │   │   │   ├── GenericPlayerResolver.kt # Диспетчер резолву потоків
 │   │   │   └── HlsStreamResolver.kt     # Парсер HLS master-плейлистів
 │   │   ├── model/                       # Data-класи моделей даних

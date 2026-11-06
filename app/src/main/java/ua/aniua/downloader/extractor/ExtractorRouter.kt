@@ -32,6 +32,16 @@ object ExtractorRouter {
             )
         }
 
+        if (FenixExtractor.isFenixUrl(cleanUrl)) {
+            val fenixMedia = FenixExtractor.parseFenixPage(client, cleanUrl)
+            if (fenixMedia != null) return fenixMedia
+        }
+
+        if (PeerTubeExtractor.isPeerTubeUrl(cleanUrl)) {
+            val peerMedia = PeerTubeExtractor.parsePage(client, cleanUrl)
+            if (peerMedia != null) return peerMedia
+        }
+
         // Пряме посилання на плеєр (Ashdi, Tortuga, MoonAnime тощо) або потік .m3u8/.mp4
         val qualities = GenericPlayerResolver.resolvePlayerStreams(client, cleanUrl, cleanUrl)
         val studio = DubStudio("direct_studio", "Оригінальна якість")

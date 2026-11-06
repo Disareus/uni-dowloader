@@ -72,19 +72,25 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun initPlayer(url: String, referer: String?) {
+        val cleanUrl = url.substringBefore("#")
         val headers = mutableMapOf<String, String>()
         headers["User-Agent"] =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         if (!referer.isNullOrEmpty()) {
             headers["Referer"] = referer
         }
+        if (cleanUrl.contains("fenix") || referer?.contains("fenix") == true) {
+            headers["Origin"] = "https://fenixplay.xyz"
+        } else if (cleanUrl.contains("moon") || referer?.contains("moon") == true) {
+            headers["Origin"] = "https://moonanime.net"
+        }
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(headers)
             .setAllowCrossProtocolRedirects(true)
 
-        val mediaItem = MediaItem.fromUri(url)
-        val mediaSource: MediaSource = if (url.contains(".m3u8")) {
+        val mediaItem = MediaItem.fromUri(cleanUrl)
+        val mediaSource: MediaSource = if (cleanUrl.contains(".m3u8")) {
             HlsMediaSource.Factory(httpDataSourceFactory).createMediaSource(mediaItem)
         } else {
             ProgressiveMediaSource.Factory(httpDataSourceFactory).createMediaSource(mediaItem)

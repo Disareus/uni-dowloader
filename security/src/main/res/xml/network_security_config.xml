@@ -46,6 +46,9 @@
         <domain includeSubdomains="true">ashdi.vip</domain>
         <domain includeSubdomains="true">tortuga.wtf</domain>
         <domain includeSubdomains="true">moonanime.art</domain>
+        <domain includeSubdomains="true">moonanime.net</domain>
+        <domain includeSubdomains="true">fenixplay.xyz</domain>
+        <domain includeSubdomains="true">peertube.in.ua</domain>
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

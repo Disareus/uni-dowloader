@@ -68,9 +68,19 @@ object AnitubeExtractor {
             val players = mutableListOf<PlayerSource>()
             for (ifr in iframes) {
                 val src = ifr.attr("src")
-                if (src.contains("ashdi") || src.contains("tortuga") || src.contains("moonanime")) {
+                if (src.contains("ashdi") || src.contains("tortuga") || MoonAnimeExtractor.isMoonUrl(src) ||
+                    FenixExtractor.isFenixUrl(src) || PeerTubeExtractor.isPeerTubeUrl(src)
+                ) {
                     val normalizedSrc = DlePlaylistParser.normalizeUrl(src, baseOrigin)
-                    val ps = PlayerSource("player_${players.size}", "Плеєр ${players.size + 1}")
+                    val pName = when {
+                        src.contains("ashdi") -> "Ashdi"
+                        src.contains("tortuga") -> "Tortuga"
+                        MoonAnimeExtractor.isMoonUrl(src) -> "Moon"
+                        FenixExtractor.isFenixUrl(src) -> "Fenix"
+                        PeerTubeExtractor.isPeerTubeUrl(src) -> "PeerTube"
+                        else -> "Плеєр ${players.size + 1}"
+                    }
+                    val ps = PlayerSource("player_${players.size}", pName)
                     ps.episodes.add(EpisodeItem("ep_single", "1", title, "1", normalizedSrc))
                     players.add(ps)
                 }

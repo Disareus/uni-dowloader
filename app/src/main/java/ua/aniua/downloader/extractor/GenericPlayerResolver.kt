@@ -38,17 +38,20 @@ object GenericPlayerResolver {
             streams = AshdiExtractor.extractStreams(client, url, referer)
         } else if (lower.contains("tortuga")) {
             streams = TortugaExtractor.extractStreams(client, url, referer)
-        } else if (lower.contains("moonanime")) {
-            streams = MoonAnimeExtractor.extractStreams(client, url, referer)
-        } else if (lower.contains("fenix") || lower.contains("fenixplay")) {
+        } else if (FenixExtractor.isFenixUrl(url)) {
             streams = FenixExtractor.extractStreams(client, url, referer)
+        } else if (PeerTubeExtractor.isPeerTubeUrl(url)) {
+            streams = PeerTubeExtractor.extractStreams(client, url, referer)
+        } else if (MoonAnimeExtractor.isMoonUrl(url)) {
+            streams = MoonAnimeExtractor.extractStreams(client, url, referer)
         } else if (lower.contains("sibnet")) {
             streams = extractSibnetStream(client, url, referer)
         }
 
         if (streams.isNotEmpty()) {
-            // Якщо єдина отримана якість це master playlist (.m3u8), розгортаємо його на окремі якості
-            if (streams.size == 1 && streams[0].isHls && streams[0].url.contains(".m3u8")) {
+            // Якщо єдина отримана якість це master playlist (.m3u8) без окремих аудіодоріжок,
+            // розгортаємо його на окремі якості
+            if (streams.size == 1 && streams[0].isHls && streams[0].url.contains(".m3u8") && !FenixExtractor.isFenixUrl(url) && !PeerTubeExtractor.isPeerTubeUrl(url)) {
                 val expanded = HlsStreamResolver.resolveMasterPlaylist(client, streams[0].url, url)
                 if (expanded.isNotEmpty()) return expanded
             }

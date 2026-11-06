@@ -72,8 +72,12 @@ object RalodePlayerParser {
                         pId = "ashdi"; pName = "Ashdi"
                     } else if (iframeUrl.contains("tortuga")) {
                         pId = "tortuga"; pName = "Tortuga"
-                    } else if (iframeUrl.contains("moonanime")) {
-                        pId = "moonanime"; pName = "MoonAnime"
+                    } else if (MoonAnimeExtractor.isMoonUrl(iframeUrl)) {
+                        pId = "moon"; pName = "Moon"
+                    } else if (FenixExtractor.isFenixUrl(iframeUrl)) {
+                        pId = "fenix"; pName = "Fenix"
+                    } else if (PeerTubeExtractor.isPeerTubeUrl(iframeUrl)) {
+                        pId = "peertube"; pName = "PeerTube"
                     }
 
                     if (!playerHint.isNullOrEmpty()) {
@@ -121,7 +125,8 @@ object RalodePlayerParser {
                 val trimmed = p.trim()
                 val low = trimmed.lowercase()
                 if (low.contains("плеєр") || low.contains("player") || low.contains("ashdi") ||
-                    low.contains("tortuga") || low.contains("moon") || low.contains("sibnet")
+                    low.contains("tortuga") || low.contains("moon") || low.contains("sibnet") ||
+                    low.contains("fenix") || low.contains("peer")
                 ) {
                     playerPart = trimmed
                 } else if (trimmed.isNotEmpty()) {

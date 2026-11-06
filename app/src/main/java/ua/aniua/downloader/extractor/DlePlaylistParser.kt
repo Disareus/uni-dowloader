@@ -21,7 +21,7 @@ object DlePlaylistParser {
     private val NUMBER_PATTERN = Pattern.compile("(\\d+)")
 
     private val PLAYER_KEYWORDS = listOf(
-        "плеєр", "player", "ashdi", "tortuga", "moonanime", "fenix", "sibnet", "kodik", "moon"
+        "плеєр", "player", "ashdi", "tortuga", "moonanime", "fenix", "sibnet", "kodik", "moon", "peer", "peertube"
     )
 
     fun extractNewsId(url: String, html: String, doc: Document?): String? {
@@ -52,7 +52,7 @@ object DlePlaylistParser {
 
     fun extractLoginHash(html: String): String {
         val m = LOGIN_HASH_PATTERN.matcher(html)
-        return if (m.find()) m.group(1).trim() else ""
+        return if (m.find()) m.group(1)?.trim() ?: "" else ""
     }
 
     fun fetchDlePlaylists(
@@ -183,10 +183,12 @@ object DlePlaylistParser {
                 pId = "ashdi"; pName = "Ashdi"
             } else if (iframeUrl.contains("tortuga")) {
                 pId = "tortuga"; pName = "Tortuga"
-            } else if (iframeUrl.contains("moonanime")) {
-                pId = "moonanime"; pName = "MoonAnime"
-            } else if (iframeUrl.contains("fenix") || iframeUrl.contains("fenixplay")) {
+            } else if (MoonAnimeExtractor.isMoonUrl(iframeUrl)) {
+                pId = "moon"; pName = "Moon"
+            } else if (FenixExtractor.isFenixUrl(iframeUrl)) {
                 pId = "fenix"; pName = "Fenix"
+            } else if (PeerTubeExtractor.isPeerTubeUrl(iframeUrl)) {
+                pId = "peertube"; pName = "PeerTube"
             }
 
             if (playerTabLabel.isNotEmpty()) {

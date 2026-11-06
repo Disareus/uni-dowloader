@@ -65,7 +65,7 @@ object HlsSegmentDownloader {
         }
 
         if (streamUrl.contains(".m3u8")) {
-            downloadHlsStream(context, client, streamUrl, referer, outputStream, listener, isCancelled)
+            downloadHlsStream(context, client, streamUrl, referer, task.quality, outputStream, listener, isCancelled)
         } else {
             downloadDirectFile(client, streamUrl, referer, outputStream, listener, isCancelled)
         }
@@ -138,12 +138,14 @@ object HlsSegmentDownloader {
         client: OkHttpClient,
         m3u8Url: String,
         referer: String?,
+        desiredQuality: String,
         out: OutputStream,
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?
     ) {
-        val baseUri = URI(m3u8Url)
-        var currentPlaylistUrl = m3u8Url
+        val cleanM3u8Url = m3u8Url.substringBefore("#")
+        val baseUri = URI(cleanM3u8Url)
+        var currentPlaylistUrl = cleanM3u8Url
         var audioPlaylistUrl: String? = null
 
         // 1. Завантажуємо первинний плейлист
@@ -151,6 +153,11 @@ object HlsSegmentDownloader {
             .url(currentPlaylistUrl)
             .header("User-Agent", BROWSER_UA)
         if (!referer.isNullOrEmpty()) req.header("Referer", referer)
+        if (cleanM3u8Url.contains("fenix") || referer?.contains("fenix") == true) {
+            req.header("Origin", "https://fenixplay.xyz")
+        } else if (cleanM3u8Url.contains("moon") || referer?.contains("moon") == true) {
+            req.header("Origin", "https://moonanime.net")
+        }
 
         val resp = client.newCall(req.build()).execute()
         if (!resp.isSuccessful || resp.body == null) {
@@ -167,13 +174,30 @@ object HlsSegmentDownloader {
                 audioPlaylistUrl = if (rawAudio.startsWith("http")) rawAudio else baseUri.resolve(rawAudio).toString()
             }
 
+            val qualityHint = if (m3u8Url.contains("#")) m3u8Url.substringAfter("#") else desiredQuality
+            val targetHeight = qualityHint.filter { it.isDigit() }.toIntOrNull() ?: 1080
+
             val lines = content.lines()
             var selectedSubUrl: String? = null
+            var bestDiff = Int.MAX_VALUE
+            var currentHeight = 0
+            val resPattern = Pattern.compile("RESOLUTION=(\\d+)x(\\d+)")
+
             for (line in lines) {
                 val l = line.trim()
-                if (!l.startsWith("#") && l.isNotEmpty()) {
-                    selectedSubUrl = if (l.startsWith("http://") || l.startsWith("https://")) l else baseUri.resolve(l).toString()
-                    break
+                if (l.startsWith("#EXT-X-STREAM-INF")) {
+                    currentHeight = 0
+                    val rm = resPattern.matcher(l)
+                    if (rm.find()) {
+                        currentHeight = rm.group(2)?.toIntOrNull() ?: 0
+                    }
+                } else if (!l.startsWith("#") && l.isNotEmpty()) {
+                    val candidateUrl = if (l.startsWith("http://") || l.startsWith("https://")) l else baseUri.resolve(l).toString()
+                    val diff = if (currentHeight > 0) Math.abs(currentHeight - targetHeight) else (bestDiff - 1)
+                    if (diff < bestDiff) {
+                        bestDiff = diff
+                        selectedSubUrl = candidateUrl
+                    }
                 }
             }
             if (selectedSubUrl != null) {
@@ -227,6 +251,11 @@ object HlsSegmentDownloader {
             .url(playlistUrl)
             .header("User-Agent", BROWSER_UA)
         if (!referer.isNullOrEmpty()) mediaReq.header("Referer", referer)
+        if (playlistUrl.contains("fenix") || referer?.contains("fenix") == true) {
+            mediaReq.header("Origin", "https://fenixplay.xyz")
+        } else if (playlistUrl.contains("moon") || referer?.contains("moon") == true) {
+            mediaReq.header("Origin", "https://moonanime.net")
+        }
 
         val mediaResp = client.newCall(mediaReq.build()).execute()
         if (!mediaResp.isSuccessful || mediaResp.body == null) {
@@ -331,6 +360,11 @@ object HlsSegmentDownloader {
                 .url(segUrl)
                 .header("User-Agent", BROWSER_UA)
             if (!referer.isNullOrEmpty()) segReq.header("Referer", referer)
+            if (segUrl.contains("fenix") || referer?.contains("fenix") == true) {
+                segReq.header("Origin", "https://fenixplay.xyz")
+            } else if (segUrl.contains("moon") || referer?.contains("moon") == true) {
+                segReq.header("Origin", "https://moonanime.net")
+            }
 
             try {
                 client.newCall(segReq.build()).execute().use { segResp ->

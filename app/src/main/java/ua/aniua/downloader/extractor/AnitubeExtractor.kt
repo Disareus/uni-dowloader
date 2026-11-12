@@ -3,11 +3,14 @@ package ua.aniua.downloader.extractor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
+import org.jsoup.nodes.Document
 import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
 import java.net.URI
+import java.util.Locale
+import java.util.regex.Pattern
 
 object AnitubeExtractor {
 
@@ -48,6 +51,14 @@ object AnitubeExtractor {
         val description = descEl?.let {
             if (it.tagName() == "meta") it.attr("content") else it.text().trim()
         }
+
+        val origTitleEl = doc.selectFirst(".story_c_r dt:contains(Оригінальна), .story_c_r dt:contains(Японська)")?.nextElementSibling()
+            ?: doc.selectFirst(".orig-title, span[itemprop='alternateName']")
+        val originalTitle = origTitleEl?.text()?.trim()
+
+        val ratingPair = extractRating(doc, html)
+        val rating = ratingPair.first
+        val ratingVotes = ratingPair.second
 
         var studios = mutableListOf<DubStudio>()
 
@@ -97,11 +108,55 @@ object AnitubeExtractor {
             url = pageUrl,
             siteType = "anitube",
             title = title,
+            originalTitle = originalTitle,
             posterUrl = posterUrl,
             description = description,
             isSeries = isSeries,
             studios = studios,
-            availableQualities = mutableListOf("1080p", "720p", "480p", "360p")
+            availableQualities = mutableListOf("1080p", "720p", "480p", "360p"),
+            rating = rating,
+            ratingVotes = ratingVotes
         )
+    }
+
+    fun extractRating(doc: Document, html: String): Pair<String?, String?> {
+        // 1. Lexington box з точною оцінкою та голосами (<span>9.6</span>/<span>10</span> (202))
+        val lexEl = doc.selectFirst(".lexington-box")
+        if (lexEl != null) {
+            val lexText = lexEl.text()
+            val m = Pattern.compile("([0-9]+(?:[.,][0-9]+)?)\\s*/\\s*10(?:\\s*\\(?\\s*([0-9]+)\\s*\\)?)?").matcher(lexText)
+            if (m.find()) {
+                val score = m.group(1)?.replace(',', '.') ?: ""
+                val votes = m.group(2)
+                val label = if (!votes.isNullOrEmpty()) "★ $score/10 ($votes)" else "★ $score/10"
+                return Pair(label, votes)
+            }
+        }
+
+        // 2. Starbar_w ширина (218px = 10.0 балів)
+        val starEl = doc.selectFirst(".starbar_w")
+        if (starEl != null) {
+            val style = starEl.attr("style")
+            val sm = Pattern.compile("width:\\s*([0-9]+(?:\\.[0-9]+)?)px").matcher(style)
+            if (sm.find()) {
+                val px = sm.group(1)?.toDoubleOrNull()
+                if (px != null && px > 0) {
+                    val score = Math.round((px / 218.0) * 10.0 * 10.0) / 10.0
+                    return Pair(String.format(Locale.US, "★ %.1f/10", score), null)
+                }
+            }
+        }
+
+        // 3. Schema.org мікророзмітка
+        val valEl = doc.selectFirst("meta[itemprop='ratingValue'], [itemprop='ratingValue']")
+        val countEl = doc.selectFirst("meta[itemprop='ratingCount'], [itemprop='ratingCount']")
+        val rVal = valEl?.attr("content")?.ifEmpty { valEl.text().trim() }
+        val rCount = countEl?.attr("content")?.ifEmpty { countEl.text().trim() }
+        if (!rVal.isNullOrEmpty()) {
+            val label = if (!rCount.isNullOrEmpty()) "★ $rVal/10 ($rCount)" else "★ $rVal/10"
+            return Pair(label, rCount)
+        }
+
+        return Pair(null, null)
     }
 }

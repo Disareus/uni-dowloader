@@ -83,8 +83,19 @@ class DownloadQueueManager private constructor(context: Context) {
                 val folderToUse = task.folderName?.ifEmpty { null } ?: animeFolder
                 task.folderName = folderToUse
 
-                val safeEp = if (task.episodeNumber.length == 1) "0${task.episodeNumber}" else task.episodeNumber
-                val fileName = "$safeTitle - Серія $safeEp [${task.quality}].${task.format}"
+                val isSingleVideo = task.episodeNumber == "0" || task.episodeNumber.isEmpty() ||
+                        task.episodeTitle.contains("Повне відео") ||
+                        task.episodeTitle.contains("YouTube") ||
+                        task.episodeTitle.contains("TikTok") ||
+                        task.episodeTitle.contains("Instagram") ||
+                        task.mediaTitle == task.episodeTitle
+
+                val fileName = if (isSingleVideo) {
+                    "$safeTitle [${task.quality}].${task.format}"
+                } else {
+                    val safeEp = if (task.episodeNumber.length == 1) "0${task.episodeNumber}" else task.episodeNumber
+                    "$safeTitle - Серія $safeEp [${task.quality}].${task.format}"
+                }
 
                 contentUri = downloadSecurity.createScopedVideoUri(fileName, "video/${task.format}", folderToUse)
                 outStream = if (contentUri != null) {

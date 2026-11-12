@@ -8,8 +8,18 @@ import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
 import java.net.URI
+import java.util.Locale
+import java.util.regex.Pattern
 
 object UaKinoExtractor {
+
+    private val JS_PLAYER_FILE_PATTERN = Pattern.compile("(?:file|src)\\s*:\\s*[\"']([^\"']+)[\"']")
+    private val JS_IFRAME_PATTERN = Pattern.compile("<iframe[^>]+(?:src|data-src)=[\"']([^\"']+)[\"']")
+
+    fun isUaKinoUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT)
+        return lower.contains("uakino")
+    }
 
     fun parsePage(client: OkHttpClient, pageUrl: String): MediaInfo {
         val uri = URI(pageUrl)
@@ -19,6 +29,8 @@ object UaKinoExtractor {
             .url(pageUrl)
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .header("Referer", "$baseOrigin/")
+            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
+            .header("Accept-Language", "uk,en-US;q=0.9,en;q=0.8")
             .build()
 
         val response = client.newCall(request).execute()
@@ -31,17 +43,24 @@ object UaKinoExtractor {
 
         val titleEl = doc.selectFirst("h1 span.solototle")
             ?: doc.selectFirst("h1[itemprop='name']")
+            ?: doc.selectFirst(".solotitle")
             ?: doc.selectFirst("h1")
         val title = titleEl?.text()?.trim() ?: "UAKino Відео"
 
-        val origEl = doc.selectFirst("span.origintitle, .orig-title")
+        val origEl = doc.selectFirst("span.origintitle, .orig-title, span.origin-title")
         val originalTitle = origEl?.text()?.trim()
 
-        val posterEl = doc.selectFirst(".fposter img, .film-poster img, .mov-desc img, [itemprop='image']")
-        val posterSrc = posterEl?.let { if (it.hasAttr("data-src")) it.attr("data-src") else it.attr("src") }
+        val posterEl = doc.selectFirst(".fposter img, .film-poster img, .mov-desc img, [itemprop='image'], .fimg img")
+        val posterSrc = posterEl?.let {
+            when {
+                it.hasAttr("data-src") && it.attr("data-src").isNotEmpty() -> it.attr("data-src")
+                it.hasAttr("data-lazy-src") && it.attr("data-lazy-src").isNotEmpty() -> it.attr("data-lazy-src")
+                else -> it.attr("src")
+            }
+        }
         val posterUrl = posterSrc?.let { DlePlaylistParser.normalizeUrl(it, baseOrigin) }
 
-        val descEl = doc.selectFirst("div[itemprop='description'], .ftext")
+        val descEl = doc.selectFirst("div[itemprop='description'], .ftext, .full-text")
         val description = descEl?.text()?.trim()
 
         val newsId = DlePlaylistParser.extractNewsId(pageUrl, html, doc)
@@ -49,14 +68,19 @@ object UaKinoExtractor {
         val userHash = DlePlaylistParser.extractLoginHash(html)
 
         var studios = mutableListOf<DubStudio>()
+
+        // 1. DLE Ajax Playlists
         if (newsId != null) {
-            studios.addAll(DlePlaylistParser.fetchDlePlaylists(client, baseOrigin, newsId, xfname, userHash, pageUrl))
+            try {
+                studios.addAll(DlePlaylistParser.fetchDlePlaylists(client, baseOrigin, newsId, xfname, userHash, pageUrl))
+            } catch (ignored: Exception) {}
         }
 
+        // 2. Пошук серіалу Ashdi у вбудованих iframe
         if (studios.isEmpty()) {
-            val iframes = doc.select("iframe[src]")
-            for (ifr in iframes) {
-                val src = ifr.attr("src")
+            val allIframes = doc.select("iframe[src], iframe[data-src], iframe[data-lazy-src]")
+            for (ifr in allIframes) {
+                val src = getIframeSource(ifr)
                 if (src.contains("ashdi") && src.contains("/serial/")) {
                     val fullSerialUrl = DlePlaylistParser.normalizeUrl(src, baseOrigin)
                     val serialStudios = AshdiExtractor.parseAshdiSerial(client, fullSerialUrl)
@@ -68,23 +92,36 @@ object UaKinoExtractor {
             }
         }
 
+        // 3. Пошук табів/кнопок із плеєрами (селектори DLE та кастомних шаблонів UAKino)
         if (studios.isEmpty()) {
-            val iframes = doc.select("iframe[src]")
-            val players = mutableListOf<PlayerSource>()
-            for (ifr in iframes) {
-                val src = ifr.attr("src")
-                if (src.contains("ashdi") || src.contains("tortuga") || MoonAnimeExtractor.isMoonUrl(src) ||
-                    FenixExtractor.isFenixUrl(src) || PeerTubeExtractor.isPeerTubeUrl(src)
-                ) {
-                    val normalizedSrc = DlePlaylistParser.normalizeUrl(src, baseOrigin)
-                    val pName = when {
-                        src.contains("ashdi") -> "Ashdi"
-                        src.contains("tortuga") -> "Tortuga"
-                        MoonAnimeExtractor.isMoonUrl(src) -> "Moon"
-                        FenixExtractor.isFenixUrl(src) -> "Fenix"
-                        PeerTubeExtractor.isPeerTubeUrl(src) -> "PeerTube"
-                        else -> "Плеєр ${players.size + 1}"
+            val playerTabs = doc.select(".tabs-sel a, .tabs-block a, .player-section [data-file], [data-player], .video-box [data-src]")
+            val playersFromTabs = mutableListOf<PlayerSource>()
+            for (tab in playerTabs) {
+                var file = tab.attr("data-file").ifEmpty { tab.attr("data-src").ifEmpty { tab.attr("href") } }.trim()
+                if (file.isNotEmpty() && !file.startsWith("#") && !file.startsWith("javascript")) {
+                    val normalizedFile = DlePlaylistParser.normalizeUrl(file, baseOrigin)
+                    if (isKnownPlayerUrl(normalizedFile)) {
+                        val tabName = tab.text().trim().ifEmpty { "Плеєр ${playersFromTabs.size + 1}" }
+                        val ps = PlayerSource("tab_player_${playersFromTabs.size}", tabName)
+                        ps.episodes.add(EpisodeItem("ep_${playersFromTabs.size + 1}", "1", title, "1", normalizedFile))
+                        playersFromTabs.add(ps)
                     }
+                }
+            }
+            if (playersFromTabs.isNotEmpty()) {
+                studios.add(DubStudio("default_tabs", "Українська озвучка", playersFromTabs))
+            }
+        }
+
+        // 4. Пошук стандартних iframe (Ashdi, Tortuga, Moon, Fenix, PeerTube, Sibnet тощо)
+        if (studios.isEmpty()) {
+            val allIframes = doc.select("iframe[src], iframe[data-src], iframe[data-lazy-src]")
+            val players = mutableListOf<PlayerSource>()
+            for (ifr in allIframes) {
+                val src = getIframeSource(ifr)
+                if (isKnownPlayerUrl(src)) {
+                    val normalizedSrc = DlePlaylistParser.normalizeUrl(src, baseOrigin)
+                    val pName = identifyPlayerName(normalizedSrc, players.size + 1)
                     val ps = PlayerSource("player_${players.size}", pName)
                     ps.episodes.add(EpisodeItem("ep_single", "1", title, "1", normalizedSrc))
                     players.add(ps)
@@ -96,7 +133,38 @@ object UaKinoExtractor {
             }
         }
 
-        val isSeries = studios.any { s -> s.players.any { p -> p.episodes.size > 1 } }
+        // 5. Пошук плеєрів у JavaScript (var player_url = ..., file: "...")
+        if (studios.isEmpty()) {
+            val jsMatcher = JS_PLAYER_FILE_PATTERN.matcher(html)
+            val playersFromJs = mutableListOf<PlayerSource>()
+            while (jsMatcher.find()) {
+                val fileUrl = jsMatcher.group(1)?.trim() ?: ""
+                if (isKnownPlayerUrl(fileUrl)) {
+                    val normalized = DlePlaylistParser.normalizeUrl(fileUrl, baseOrigin)
+                    val pName = identifyPlayerName(normalized, playersFromJs.size + 1)
+                    val ps = PlayerSource("js_player_${playersFromJs.size}", pName)
+                    ps.episodes.add(EpisodeItem("ep_js", "1", title, "1", normalized))
+                    playersFromJs.add(ps)
+                }
+            }
+            if (playersFromJs.isNotEmpty()) {
+                studios.add(DubStudio("default_js", "Українська озвучка", playersFromJs))
+            }
+        }
+
+        // 6. Визначення чи це серіал чи одиночний фільм
+        val hasMultipleEpisodes = studios.any { s -> s.players.any { p -> p.episodes.size > 1 } }
+        val titleLower = (title + " " + (description ?: "")).lowercase(Locale.ROOT)
+        val hasSeriesKeywords = titleLower.contains("серіал") ||
+                titleLower.contains("сезон") ||
+                titleLower.contains("серія") ||
+                titleLower.contains("дорама")
+
+        val isSeries = hasMultipleEpisodes || (hasSeriesKeywords && studios.isNotEmpty())
+
+        val rateEl = doc.selectFirst(".rate-imdb span, .rate-kp span, meta[itemprop='ratingValue'], [itemprop='ratingValue']")
+        val rVal = if (rateEl?.tagName() == "meta") rateEl.attr("content") else rateEl?.text()?.trim()
+        val rating = if (!rVal.isNullOrEmpty()) "★ $rVal" else null
 
         return MediaInfo(
             url = pageUrl,
@@ -107,7 +175,51 @@ object UaKinoExtractor {
             description = description,
             isSeries = isSeries,
             studios = studios,
-            availableQualities = mutableListOf("1080p", "720p", "480p", "360p")
+            availableQualities = mutableListOf("1080p", "720p", "480p", "360p"),
+            rating = rating
         )
+    }
+
+    private fun getIframeSource(ifr: org.jsoup.nodes.Element): String {
+        return when {
+            ifr.hasAttr("src") && ifr.attr("src").isNotEmpty() -> ifr.attr("src").trim()
+            ifr.hasAttr("data-src") && ifr.attr("data-src").isNotEmpty() -> ifr.attr("data-src").trim()
+            ifr.hasAttr("data-lazy-src") && ifr.attr("data-lazy-src").isNotEmpty() -> ifr.attr("data-lazy-src").trim()
+            else -> ""
+        }
+    }
+
+    fun isKnownPlayerUrl(src: String): Boolean {
+        val lower = src.lowercase(Locale.ROOT)
+        return lower.contains("ashdi") ||
+                lower.contains("tortuga") ||
+                lower.contains("moonanime") ||
+                lower.contains("mooncdn") ||
+                lower.contains("fenix") ||
+                lower.contains("peertube") ||
+                lower.contains("sibnet") ||
+                lower.contains("kodik") ||
+                lower.contains("ustore") ||
+                lower.contains("alloha") ||
+                lower.contains("collaps") ||
+                lower.contains(".m3u8") ||
+                lower.contains(".mp4")
+    }
+
+    fun identifyPlayerName(url: String, index: Int): String {
+        val lower = url.lowercase(Locale.ROOT)
+        return when {
+            lower.contains("ashdi") -> "Ashdi"
+            lower.contains("tortuga") -> "Tortuga"
+            lower.contains("moon") -> "Moon"
+            lower.contains("fenix") -> "Fenix"
+            lower.contains("peertube") || lower.contains("peer") -> "PeerTube"
+            lower.contains("sibnet") -> "Sibnet"
+            lower.contains("kodik") -> "Kodik"
+            lower.contains("ustore") -> "Ustore"
+            lower.contains("alloha") -> "Alloha"
+            lower.contains("collaps") -> "Collaps"
+            else -> "Плеєр $index"
+        }
     }
 }

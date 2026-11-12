@@ -11,5 +11,7 @@ data class MediaInfo(
     var description: String? = null,
     var isSeries: Boolean = true,
     var studios: MutableList<DubStudio> = mutableListOf(),
-    var availableQualities: MutableList<String> = mutableListOf("1080p", "720p", "480p", "360p")
+    var availableQualities: MutableList<String> = mutableListOf("1080p", "720p", "480p", "360p"),
+    var rating: String? = null,
+    var ratingVotes: String? = null
 ) : Serializable

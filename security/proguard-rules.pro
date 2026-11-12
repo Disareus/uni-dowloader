@@ -139,4 +139,6 @@
 -keepclassmembers class * {
     @com.google.gson.annotations.SerializedName <fields>;
 }
+-dontwarn java.lang.invoke.StringConcatFactory
+-dontwarn java.lang.invoke.**
 -keep class ua.aniua.downloader.models.** { *; }

@@ -35,373 +35,635 @@
 
         </com.google.android.material.appbar.MaterialToolbar>
 
+        <!-- Segmented Tab Bar: AniTube Catalog & Downloader -->
+        <com.google.android.material.tabs.TabLayout
+            android:id="@+id/tab_layout"
+            android:layout_width="match_parent"
+            android:layout_height="46dp"
+            android:background="@color/aniyomi_surface"
+            app:tabIndicatorColor="@color/accent_cyan"
+            app:tabIndicatorHeight="3dp"
+            app:tabMode="fixed"
+            app:tabGravity="fill"
+            app:tabRippleColor="@color/aniyomi_surface_highlight"
+            app:tabSelectedTextColor="@color/accent_cyan"
+            app:tabTextColor="@color/text_secondary">
+
+            <com.google.android.material.tabs.TabItem
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="🌐 Каталог AniTube" />
+
+            <com.google.android.material.tabs.TabItem
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="📥 Завантажувач" />
+
+        </com.google.android.material.tabs.TabLayout>
+
     </com.google.android.material.appbar.AppBarLayout>
 
-    <androidx.core.widget.NestedScrollView
+    <!-- Main Container -->
+    <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:clipToPadding="false"
-        android:paddingBottom="90dp"
         app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
-        <LinearLayout
+        <!-- 1. Вбудований перегляд сайту AniTube (Каталог) -->
+        <RelativeLayout
+            android:id="@+id/layout_catalog"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
+            android:layout_height="match_parent"
+            android:visibility="visible">
 
-            <!-- Security Banner (Debug/Risk Mode) -->
-            <com.google.android.material.card.MaterialCardView
-                android:id="@+id/card_security_banner"
+            <ProgressBar
+                android:id="@+id/progress_web_loader"
+                style="?android:attr/progressBarStyleHorizontal"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginHorizontal="16dp"
-                android:layout_marginTop="8dp"
-                android:visibility="gone"
-                app:cardBackgroundColor="@color/aniyomi_surface_elevated"
-                app:cardCornerRadius="12dp"
-                app:strokeColor="@color/accent_orange"
-                app:strokeWidth="1dp">
+                android:layout_height="3dp"
+                android:layout_alignParentTop="true"
+                android:indeterminate="false"
+                android:max="100"
+                android:progressTint="@color/accent_cyan"
+                android:visibility="gone" />
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:padding="12dp">
-
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:src="@android:drawable/ic_dialog_alert"
-                        app:tint="@color/accent_orange" />
-
-                    <TextView
-                        android:id="@+id/tv_security_banner_text"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="10dp"
-                        android:layout_weight="1"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="12sp"
-                        tools:text="Захищений режим активовано" />
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- URL Input Bar (Sleek Aniyomi Search Pill) -->
-            <com.google.android.material.card.MaterialCardView
+            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+                android:id="@+id/swipe_refresh_catalog"
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginHorizontal="16dp"
-                android:layout_marginTop="12dp"
-                app:cardBackgroundColor="@color/aniyomi_surface"
-                app:cardCornerRadius="16dp"
-                app:strokeColor="@color/aniyomi_surface_highlight"
-                app:strokeWidth="1dp">
+                android:layout_height="match_parent"
+                android:layout_above="@id/layout_web_bottom_bar"
+                android:layout_below="@id/progress_web_loader">
 
-                <LinearLayout
+                <WebView
+                    android:id="@+id/webview_anitube"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal"
-                    android:paddingStart="14dp"
-                    android:paddingEnd="6dp"
-                    android:paddingVertical="4dp">
+                    android:layout_height="match_parent"
+                    android:background="@color/aniyomi_bg" />
 
-                    <ImageView
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:src="@android:drawable/ic_menu_search"
-                        app:tint="@color/accent_cyan" />
+            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/et_url"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="10dp"
-                        android:layout_weight="1"
-                        android:background="@null"
-                        android:hint="Вставте посилання на аніме..."
-                        android:inputType="textUri"
-                        android:maxLines="1"
-                        android:textColor="@color/text_primary"
-                        android:textColorHint="@color/text_muted"
-                        android:textSize="14sp" />
-
-                    <ProgressBar
-                        android:id="@+id/progress_analyze"
-                        android:layout_width="28dp"
-                        android:layout_height="28dp"
-                        android:layout_marginEnd="8dp"
-                        android:visibility="gone" />
-
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_analyze"
-                        android:layout_width="wrap_content"
-                        android:layout_height="40dp"
-                        android:backgroundTint="@color/primary_variant"
-                        android:text="Пошук"
-                        android:textSize="13sp"
-                        app:cornerRadius="12dp" />
-
-                </LinearLayout>
-            </com.google.android.material.card.MaterialCardView>
-
-            <!-- Anime Detail Container (Aniyomi Style) -->
+            <!-- Панель швидкої навігації браузера AniTube -->
             <LinearLayout
-                android:id="@+id/container_media_detail"
+                android:id="@+id/layout_web_bottom_bar"
+                android:layout_width="match_parent"
+                android:layout_height="52dp"
+                android:layout_alignParentBottom="true"
+                android:background="@color/aniyomi_surface"
+                android:elevation="6dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="12dp">
+
+                <ImageButton
+                    android:id="@+id/btn_web_back"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Назад"
+                    android:src="@android:drawable/ic_media_previous"
+                    app:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/btn_web_forward"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Вперед"
+                    android:src="@android:drawable/ic_media_next"
+                    app:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/btn_web_home"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Головна сторінка"
+                    android:src="@android:drawable/ic_menu_today"
+                    app:tint="@color/accent_cyan" />
+
+                <ImageButton
+                    android:id="@+id/btn_web_refresh"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="4dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Оновити"
+                    android:src="@android:drawable/ic_menu_rotate"
+                    app:tint="@color/text_primary" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <!-- Кнопка швидкого переходу до меню завантаження поточної сторінки -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_web_download_current"
+                    android:layout_width="wrap_content"
+                    android:layout_height="38dp"
+                    android:backgroundTint="@color/accent_cyan"
+                    android:text="📥 Завантажити"
+                    android:textColor="@color/aniyomi_bg"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:visibility="gone"
+                    app:cornerRadius="10dp"
+                    tools:visibility="visible" />
+
+            </LinearLayout>
+
+        </RelativeLayout>
+
+        <!-- 2. Екран завантажувача та деталей аніме -->
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/scroll_downloader"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:paddingBottom="90dp"
+            android:visibility="gone"
+            tools:visibility="visible">
+
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:visibility="gone"
-                tools:visibility="visible">
+                android:orientation="vertical">
 
-                <!-- Backdrop & Header Section -->
-                <RelativeLayout
+                <!-- Кнопка повернення до каталогу AniTube -->
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_back_to_catalog"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="16dp">
+                    android:layout_height="42dp"
+                    android:layout_marginHorizontal="16dp"
+                    android:layout_marginTop="10dp"
+                    android:backgroundTint="@color/aniyomi_surface"
+                    android:text="⬅️ Повернутися до каталогу AniTube"
+                    android:textColor="@color/accent_cyan"
+                    android:textSize="13sp"
+                    app:cornerRadius="12dp"
+                    app:strokeColor="@color/aniyomi_surface_highlight"
+                    app:strokeWidth="1dp" />
 
-                    <ImageView
-                        android:id="@+id/iv_backdrop"
-                        android:layout_width="match_parent"
-                        android:layout_height="180dp"
-                        android:alpha="0.25"
-                        android:scaleType="centerCrop" />
-
-                    <View
-                        android:layout_width="match_parent"
-                        android:layout_height="180dp"
-                        android:background="@drawable/gradient_scrim_bottom" />
-
-                    <!-- Poster & Metadata Row -->
-                    <LinearLayout
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:layout_alignParentBottom="true"
-                        android:gravity="bottom"
-                        android:orientation="horizontal"
-                        android:paddingHorizontal="16dp"
-                        android:paddingTop="20dp">
-
-                        <com.google.android.material.card.MaterialCardView
-                            android:layout_width="105dp"
-                            android:layout_height="150dp"
-                            app:cardCornerRadius="14dp"
-                            app:cardElevation="6dp"
-                            app:strokeColor="@color/aniyomi_surface_highlight"
-                            app:strokeWidth="1dp">
-
-                            <ImageView
-                                android:id="@+id/iv_poster"
-                                android:layout_width="match_parent"
-                                android:layout_height="match_parent"
-                                android:background="@color/aniyomi_surface_elevated"
-                                android:scaleType="centerCrop" />
-                        </com.google.android.material.card.MaterialCardView>
-
-                        <LinearLayout
-                            android:layout_width="0dp"
-                            android:layout_height="wrap_content"
-                            android:layout_marginStart="14dp"
-                            android:layout_weight="1"
-                            android:orientation="vertical">
-
-                            <!-- Source Badge & Quality Pill -->
-                            <LinearLayout
-                                android:layout_width="wrap_content"
-                                android:layout_height="wrap_content"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:id="@+id/tv_badge_site"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:background="@drawable/bg_badge_accent"
-                                    android:paddingHorizontal="8dp"
-                                    android:paddingVertical="3dp"
-                                    android:textColor="@color/accent_cyan"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold"
-                                    tools:text="ANITUBE" />
-
-                                <TextView
-                                    android:id="@+id/tv_badge_ep_count"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginStart="6dp"
-                                    android:background="@drawable/bg_badge_muted"
-                                    android:paddingHorizontal="8dp"
-                                    android:paddingVertical="3dp"
-                                    android:textColor="@color/text_secondary"
-                                    android:textSize="11sp"
-                                    tools:text="12 серій" />
-                            </LinearLayout>
-
-                            <TextView
-                                android:id="@+id/tv_media_title"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="6dp"
-                                android:ellipsize="end"
-                                android:maxLines="2"
-                                android:textColor="@color/text_primary"
-                                android:textSize="18sp"
-                                android:textStyle="bold"
-                                tools:text="Назва Аніме / Серіалу" />
-
-                            <TextView
-                                android:id="@+id/tv_media_orig_title"
-                                android:layout_width="match_parent"
-                                android:layout_height="wrap_content"
-                                android:layout_marginTop="2dp"
-                                android:ellipsize="end"
-                                android:maxLines="1"
-                                android:textColor="@color/text_muted"
-                                android:textSize="12sp"
-                                tools:text="Sousou no Frieren" />
-
-                        </LinearLayout>
-                    </LinearLayout>
-                </RelativeLayout>
-
-                <!-- Description (Expandable) -->
-                <TextView
-                    android:id="@+id/tv_media_desc"
+                <!-- Security Banner (Debug/Risk Mode) -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_security_banner"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginHorizontal="16dp"
-                    android:layout_marginTop="12dp"
-                    android:ellipsize="end"
-                    android:lineSpacingExtra="3dp"
-                    android:maxLines="3"
-                    android:textColor="@color/text_secondary"
-                    android:textSize="13sp"
-                    tools:text="Короткий синопсис аніме та опис сюжету..." />
+                    android:layout_marginTop="8dp"
+                    android:visibility="gone"
+                    app:cardBackgroundColor="@color/aniyomi_surface_elevated"
+                    app:cardCornerRadius="12dp"
+                    app:strokeColor="@color/accent_orange"
+                    app:strokeWidth="1dp">
 
-                <!-- Dubbing Studio Section (Anitube / UAKino Voice Selection) -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="18dp"
-                    android:orientation="vertical">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginHorizontal="16dp"
-                        android:text="ОЗВУЧЕННЯ ТА ДАБЕРИ"
-                        android:textColor="@color/accent_cyan"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-
-                    <HorizontalScrollView
+                    <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="8dp"
-                        android:clipToPadding="false"
-                        android:paddingHorizontal="16dp"
-                        android:scrollbars="none">
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:padding="12dp">
 
-                        <com.google.android.material.chip.ChipGroup
-                            android:id="@+id/chip_group_studios"
-                            android:layout_width="wrap_content"
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@android:drawable/ic_dialog_alert"
+                            app:tint="@color/accent_orange" />
+
+                        <TextView
+                            android:id="@+id/tv_security_banner_text"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            app:selectionRequired="true"
-                            app:singleSelection="true" />
-                    </HorizontalScrollView>
-                </LinearLayout>
+                            android:layout_marginStart="10dp"
+                            android:layout_weight="1"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="12sp"
+                            tools:text="Захищений режим активовано" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
 
-                <!-- Player Balancers Pills (Ashdi / Tortuga / Moon) -->
-                <LinearLayout
-                    android:id="@+id/container_players_bar"
+                <!-- URL Input Bar (Sleek Aniyomi Search Pill) -->
+                <com.google.android.material.card.MaterialCardView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="16dp"
                     android:layout_marginTop="10dp"
+                    app:cardBackgroundColor="@color/aniyomi_surface"
+                    app:cardCornerRadius="16dp"
+                    app:strokeColor="@color/aniyomi_surface_highlight"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal"
+                        android:paddingStart="14dp"
+                        android:paddingEnd="6dp"
+                        android:paddingVertical="4dp">
+
+                        <ImageView
+                            android:layout_width="20dp"
+                            android:layout_height="20dp"
+                            android:src="@android:drawable/ic_menu_search"
+                            app:tint="@color/accent_cyan" />
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/et_url"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginStart="10dp"
+                            android:layout_weight="1"
+                            android:background="@null"
+                            android:hint="Вставте посилання або оберіть у каталозі..."
+                            android:inputType="textUri"
+                            android:maxLines="1"
+                            android:textColor="@color/text_primary"
+                            android:textColorHint="@color/text_muted"
+                            android:textSize="13sp" />
+
+                        <ProgressBar
+                            android:id="@+id/progress_analyze"
+                            android:layout_width="28dp"
+                            android:layout_height="28dp"
+                            android:layout_marginEnd="8dp"
+                            android:visibility="gone" />
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/btn_analyze"
+                            android:layout_width="wrap_content"
+                            android:layout_height="40dp"
+                            android:backgroundTint="@color/primary_variant"
+                            android:text="Пошук"
+                            android:textSize="13sp"
+                            app:cornerRadius="12dp" />
+
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Anime Detail Container (Aniyomi Style) -->
+                <LinearLayout
+                    android:id="@+id/container_media_detail"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
                     android:orientation="vertical"
                     android:visibility="gone"
                     tools:visibility="visible">
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginHorizontal="16dp"
-                        android:text="ВІДЕОПЛЕЄР"
-                        android:textColor="@color/text_muted"
-                        android:textSize="11sp" />
-
-                    <HorizontalScrollView
+                    <!-- Backdrop & Header Section -->
+                    <RelativeLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:clipToPadding="false"
-                        android:paddingHorizontal="16dp"
-                        android:scrollbars="none">
+                        android:layout_marginTop="16dp">
 
-                        <com.google.android.material.chip.ChipGroup
-                            android:id="@+id/chip_group_players"
+                        <ImageView
+                            android:id="@+id/iv_backdrop"
+                            android:layout_width="match_parent"
+                            android:layout_height="180dp"
+                            android:alpha="0.25"
+                            android:scaleType="centerCrop" />
+
+                        <View
+                            android:layout_width="match_parent"
+                            android:layout_height="180dp"
+                            android:background="@drawable/gradient_scrim_bottom" />
+
+                        <!-- Poster & Metadata Row -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_alignParentBottom="true"
+                            android:gravity="bottom"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="16dp"
+                            android:paddingTop="20dp">
+
+                            <com.google.android.material.card.MaterialCardView
+                                android:layout_width="105dp"
+                                android:layout_height="150dp"
+                                app:cardCornerRadius="14dp"
+                                app:cardElevation="6dp"
+                                app:strokeColor="@color/aniyomi_surface_highlight"
+                                app:strokeWidth="1dp">
+
+                                <ImageView
+                                    android:id="@+id/iv_poster"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="match_parent"
+                                    android:background="@color/aniyomi_surface_elevated"
+                                    android:scaleType="centerCrop" />
+                            </com.google.android.material.card.MaterialCardView>
+
+                            <LinearLayout
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="14dp"
+                                android:layout_weight="1"
+                                android:orientation="vertical">
+
+                                <!-- Source Badge, Quality Pill & Rating -->
+                                <LinearLayout
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:gravity="center_vertical"
+                                    android:orientation="horizontal">
+
+                                    <TextView
+                                        android:id="@+id/tv_badge_site"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:background="@drawable/bg_badge_accent"
+                                        android:paddingHorizontal="8dp"
+                                        android:paddingVertical="3dp"
+                                        android:textColor="@color/accent_cyan"
+                                        android:textSize="11sp"
+                                        android:textStyle="bold"
+                                        tools:text="ANITUBE" />
+
+                                    <TextView
+                                        android:id="@+id/tv_badge_ep_count"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginStart="6dp"
+                                        android:background="@drawable/bg_badge_muted"
+                                        android:paddingHorizontal="8dp"
+                                        android:paddingVertical="3dp"
+                                        android:textColor="@color/text_secondary"
+                                        android:textSize="11sp"
+                                        tools:text="12 серій" />
+
+                                    <!-- Рейтинг аніме -->
+                                    <TextView
+                                        android:id="@+id/tv_badge_rating"
+                                        android:layout_width="wrap_content"
+                                        android:layout_height="wrap_content"
+                                        android:layout_marginStart="6dp"
+                                        android:background="@drawable/bg_badge_rating"
+                                        android:paddingHorizontal="8dp"
+                                        android:paddingVertical="3dp"
+                                        android:textColor="@color/accent_orange"
+                                        android:textSize="11sp"
+                                        android:textStyle="bold"
+                                        android:visibility="gone"
+                                        tools:visibility="visible"
+                                        tools:text="★ 9.6/10 (202)" />
+                                </LinearLayout>
+
+                                <TextView
+                                    android:id="@+id/tv_media_title"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="6dp"
+                                    android:ellipsize="end"
+                                    android:maxLines="2"
+                                    android:textColor="@color/text_primary"
+                                    android:textSize="18sp"
+                                    android:textStyle="bold"
+                                    tools:text="Назва Аніме / Серіалу" />
+
+                                <TextView
+                                    android:id="@+id/tv_media_orig_title"
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="2dp"
+                                    android:ellipsize="end"
+                                    android:maxLines="1"
+                                    android:textColor="@color/text_muted"
+                                    android:textSize="12sp"
+                                    tools:text="Sousou no Frieren" />
+
+                            </LinearLayout>
+                        </LinearLayout>
+                    </RelativeLayout>
+
+                    <!-- Description (Expandable) -->
+                    <TextView
+                        android:id="@+id/tv_media_desc"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginHorizontal="16dp"
+                        android:layout_marginTop="12dp"
+                        android:ellipsize="end"
+                        android:lineSpacingExtra="3dp"
+                        android:maxLines="3"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="13sp"
+                        tools:text="Короткий синопсис аніме та опис сюжету..." />
+
+                    <!-- Dubbing Studio Section (Anitube / UAKino Voice Selection) -->
+                    <LinearLayout
+                        android:id="@+id/container_studios_section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="18dp"
+                        android:orientation="vertical">
+
+                        <TextView
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
-                            app:selectionRequired="true"
-                            app:singleSelection="true" />
-                    </HorizontalScrollView>
-                </LinearLayout>
+                            android:layout_marginHorizontal="16dp"
+                            android:text="ОЗВУЧЕННЯ ТА ДАБЕРИ"
+                            android:textColor="@color/accent_cyan"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
 
-                <!-- Episodes Header & Selection Bar -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginHorizontal="16dp"
-                    android:layout_marginTop="16dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+                        <HorizontalScrollView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="8dp"
+                            android:clipToPadding="false"
+                            android:paddingHorizontal="16dp"
+                            android:scrollbars="none">
 
-                    <TextView
-                        android:id="@+id/tv_episodes_header"
-                        android:layout_width="0dp"
+                            <com.google.android.material.chip.ChipGroup
+                                android:id="@+id/chip_group_studios"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                app:selectionRequired="true"
+                                app:singleSelection="true" />
+                        </HorizontalScrollView>
+                    </LinearLayout>
+
+                    <!-- Player Balancers Pills (Ashdi / Tortuga / Moon / Fenix / PeerTube) -->
+                    <LinearLayout
+                        android:id="@+id/container_players_bar"
+                        android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:textColor="@color/text_primary"
-                        android:textSize="15sp"
-                        android:textStyle="bold"
-                        tools:text="Серії (12)" />
+                        android:layout_marginTop="10dp"
+                        android:orientation="vertical"
+                        android:visibility="gone"
+                        tools:visibility="visible">
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/btn_select_all"
-                        style="@style/Widget.Material3.Button.TextButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="36dp"
-                        android:text="Вибрати всі"
-                        android:textColor="@color/accent_cyan"
-                        android:textSize="12sp" />
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginHorizontal="16dp"
+                            android:text="ВІДЕОПЛЕЄР"
+                            android:textColor="@color/text_muted"
+                            android:textSize="11sp" />
+
+                        <HorizontalScrollView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:clipToPadding="false"
+                            android:paddingHorizontal="16dp"
+                            android:scrollbars="none">
+
+                            <com.google.android.material.chip.ChipGroup
+                                android:id="@+id/chip_group_players"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                app:selectionRequired="true"
+                                app:singleSelection="true" />
+                        </HorizontalScrollView>
+                    </LinearLayout>
+
+                    <!-- Single Video Actions (For YouTube, TikTok, Instagram, Single Movie) -->
+                    <LinearLayout
+                        android:id="@+id/container_single_video_actions"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginHorizontal="16dp"
+                        android:layout_marginTop="16dp"
+                        android:orientation="vertical"
+                        android:visibility="gone"
+                        tools:visibility="visible">
+
+                        <com.google.android.material.card.MaterialCardView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            app:cardBackgroundColor="@color/aniyomi_surface"
+                            app:cardCornerRadius="16dp"
+                            app:strokeColor="@color/aniyomi_surface_highlight"
+                            app:strokeWidth="1dp">
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:orientation="vertical"
+                                android:padding="16dp">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="⚡ ВІДЕО ГОТОВЕ"
+                                    android:textColor="@color/accent_cyan"
+                                    android:textSize="12sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="4dp"
+                                    android:text="Одиночне відео без серій. Оберіть дію:"
+                                    android:textColor="@color/text_secondary"
+                                    android:textSize="13sp" />
+
+                                <LinearLayout
+                                    android:layout_width="match_parent"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginTop="14dp"
+                                    android:orientation="horizontal">
+
+                                    <com.google.android.material.button.MaterialButton
+                                        android:id="@+id/btn_single_preview"
+                                        style="@style/Widget.Material3.Button.OutlinedButton"
+                                        android:layout_width="0dp"
+                                        android:layout_height="46dp"
+                                        android:layout_weight="1"
+                                        android:layout_marginEnd="6dp"
+                                        android:text="▶️ Перегляд"
+                                        android:textColor="@color/text_primary"
+                                        app:cornerRadius="12dp"
+                                        app:strokeColor="@color/aniyomi_surface_highlight" />
+
+                                    <com.google.android.material.button.MaterialButton
+                                        android:id="@+id/btn_single_download"
+                                        android:layout_width="0dp"
+                                        android:layout_height="46dp"
+                                        android:layout_weight="1"
+                                        android:layout_marginStart="6dp"
+                                        android:backgroundTint="@color/primary_variant"
+                                        android:text="📥 Завантажити"
+                                        android:textColor="@color/white"
+                                        app:cornerRadius="12dp" />
+                                </LinearLayout>
+                            </LinearLayout>
+                        </com.google.android.material.card.MaterialCardView>
+                    </LinearLayout>
+
+                    <!-- Episodes Section (Only for Multi-Episode Media) -->
+                    <LinearLayout
+                        android:id="@+id/container_episodes_section"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical">
+
+                        <!-- Episodes Header & Selection Bar -->
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginHorizontal="16dp"
+                            android:layout_marginTop="16dp"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal">
+
+                            <TextView
+                                android:id="@+id/tv_episodes_header"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="СПИСОК СЕРІЙ"
+                                android:textColor="@color/text_primary"
+                                android:textSize="14sp"
+                                android:textStyle="bold" />
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/btn_select_all"
+                                style="@style/Widget.Material3.Button.TextButton"
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Вибрати всі"
+                                android:textColor="@color/accent_cyan"
+                                android:textSize="12sp" />
+                        </LinearLayout>
+
+                        <!-- Episodes RecyclerView -->
+                        <androidx.recyclerview.widget.RecyclerView
+                            android:id="@+id/rv_episodes"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:nestedScrollingEnabled="false"
+                            tools:itemCount="4"
+                            tools:listitem="@layout/item_episode" />
+                    </LinearLayout>
+
                 </LinearLayout>
-
-                <!-- Episodes List (Aniyomi Card Style) -->
-                <androidx.recyclerview.widget.RecyclerView
-                    android:id="@+id/rv_episodes"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:nestedScrollingEnabled="false"
-                    android:paddingHorizontal="16dp" />
 
             </LinearLayout>
 
-        </LinearLayout>
-    </androidx.core.widget.NestedScrollView>
+        </androidx.core.widget.NestedScrollView>
 
-    <!-- Floating Aniyomi Bottom Download Bar -->
+    </FrameLayout>
+
+    <!-- Bottom Download Floating Bar (Aniyomi Floating Action Dock) -->
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/card_bottom_download_bar"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:layout_margin="12dp"
+        android:layout_marginHorizontal="16dp"
+        android:layout_marginBottom="16dp"
         android:visibility="gone"
         app:cardBackgroundColor="@color/aniyomi_surface_elevated"
         app:cardCornerRadius="20dp"
-        app:cardElevation="10dp"
+        app:cardElevation="12dp"
         app:strokeColor="@color/aniyomi_surface_highlight"
-        app:strokeWidth="1dp"
+        app:strokeWidth="1.5dp"
         tools:visibility="visible">
 
         <LinearLayout
@@ -409,13 +671,13 @@
             android:layout_height="wrap_content"
             android:gravity="center_vertical"
             android:orientation="horizontal"
-            android:paddingHorizontal="14dp"
-            android:paddingVertical="10dp">
+            android:padding="12dp">
 
-            <!-- Selected info & Quality Spinner -->
+            <!-- Selected Episodes Count & Quality Selector -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginStart="4dp"
                 android:layout_weight="1"
                 android:orientation="vertical">
 

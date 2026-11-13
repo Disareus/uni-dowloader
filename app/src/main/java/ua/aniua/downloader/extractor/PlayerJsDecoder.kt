@@ -1,8 +1,6 @@
 package ua.aniua.downloader.extractor
 
-import android.util.Base64
 import ua.aniua.downloader.model.StreamQuality
-import java.nio.charset.StandardCharsets
 import java.util.regex.Pattern
 
 object PlayerJsDecoder {
@@ -26,15 +24,8 @@ object PlayerJsDecoder {
 
         cleaned = cleaned.replace(Regex("//[^/]+//"), "")
 
-        return try {
-            val pad = (4 - (cleaned.length % 4)) % 4
-            val padded = cleaned + "=".repeat(pad)
-            val decodedBytes = Base64.decode(padded, Base64.DEFAULT)
-            val decoded = String(decodedBytes, StandardCharsets.UTF_8)
-            if (decoded.contains("http")) decoded else v
-        } catch (ignored: Exception) {
-            v
-        }
+        val decoded = ExtractorUtils.decodeBase64Utf8(cleaned)
+        return if (decoded.contains("http")) decoded else v
     }
 
     fun parsePlayerJsQualities(fileStr: String, referer: String?): List<StreamQuality> {
@@ -51,7 +42,7 @@ object PlayerJsDecoder {
                 if (labelRaw != null) {
                     val hMatcher = HEIGHT_PATTERN.matcher(labelRaw)
                     if (hMatcher.find()) {
-                        height = hMatcher.group(1).toIntOrNull() ?: 0
+                        height = hMatcher.group(1)?.toIntOrNull() ?: 0
                     }
                 }
                 val label = if (height > 0) "${height}p" else (labelRaw?.trim() ?: "auto")

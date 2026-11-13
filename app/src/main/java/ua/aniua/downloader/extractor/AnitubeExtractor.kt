@@ -8,29 +8,28 @@ import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
-import java.net.URI
 import java.util.Locale
 import java.util.regex.Pattern
 
 object AnitubeExtractor {
 
     fun parsePage(client: OkHttpClient, pageUrl: String): MediaInfo {
-        val uri = URI(pageUrl)
-        val baseOrigin = "${uri.scheme}://${uri.host}"
+        val normalizedPageUrl = ExtractorUtils.ensureHttpsScheme(pageUrl)
+        val baseOrigin = ExtractorUtils.extractBaseOrigin(normalizedPageUrl, "https://anitube.in.ua")
 
         val request = Request.Builder()
-            .url(pageUrl)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .url(normalizedPageUrl)
+            .header("User-Agent", ExtractorUtils.DEFAULT_UA)
             .header("Referer", "$baseOrigin/")
             .build()
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful || response.body == null) {
-            throw IllegalStateException("HTTP error ${response.code}")
+        val html = client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful || response.body == null) {
+                throw IllegalStateException("HTTP error ${response.code}")
+            }
+            response.body?.string() ?: ""
         }
-
-        val html = response.body?.string() ?: ""
-        val doc = Jsoup.parse(html, pageUrl)
+        val doc = Jsoup.parse(html, normalizedPageUrl)
 
         val titleEl = doc.selectFirst(".story_c h2, h1, meta[property='og:title']")
         val title = if (titleEl != null) {
@@ -56,18 +55,18 @@ object AnitubeExtractor {
             ?: doc.selectFirst(".orig-title, span[itemprop='alternateName']")
         val originalTitle = origTitleEl?.text()?.trim()
 
-        val ratingPair = extractRating(doc, html)
+        val ratingPair = extractRating(doc)
         val rating = ratingPair.first
         val ratingVotes = ratingPair.second
 
-        var studios = mutableListOf<DubStudio>()
+        val studios = mutableListOf<DubStudio>()
 
-        val newsId = DlePlaylistParser.extractNewsId(pageUrl, html, doc)
+        val newsId = DlePlaylistParser.extractNewsId(normalizedPageUrl, html, doc)
         val xfname = DlePlaylistParser.extractXfname(doc)
         val userHash = DlePlaylistParser.extractLoginHash(html)
 
         if (newsId != null) {
-            studios.addAll(DlePlaylistParser.fetchDlePlaylists(client, baseOrigin, newsId, xfname, userHash, pageUrl))
+            studios.addAll(DlePlaylistParser.fetchDlePlaylists(client, baseOrigin, newsId, xfname, userHash, normalizedPageUrl))
         }
 
         if (studios.isEmpty()) {
@@ -83,29 +82,31 @@ object AnitubeExtractor {
                     FenixExtractor.isFenixUrl(src) || PeerTubeExtractor.isPeerTubeUrl(src)
                 ) {
                     val normalizedSrc = DlePlaylistParser.normalizeUrl(src, baseOrigin)
-                    val pName = when {
-                        src.contains("ashdi") -> "Ashdi"
-                        src.contains("tortuga") -> "Tortuga"
-                        MoonAnimeExtractor.isMoonUrl(src) -> "Moon"
-                        FenixExtractor.isFenixUrl(src) -> "Fenix"
-                        PeerTubeExtractor.isPeerTubeUrl(src) -> "PeerTube"
-                        else -> "Плеєр ${players.size + 1}"
-                    }
+                    val (_, pName) = ExtractorUtils.identifyPlayer(src, players.size + 1)
                     val ps = PlayerSource("player_${players.size}", pName)
                     ps.episodes.add(EpisodeItem("ep_single", "1", title, "1", normalizedSrc))
                     players.add(ps)
                 }
             }
             if (players.isNotEmpty()) {
-                val defaultStudio = DubStudio("default", "Оригінал / Озвучення", players)
-                studios.add(defaultStudio)
+                studios.add(DubStudio("default", "Оригінал / Озвучення", players))
+            }
+        }
+
+        val maxExistingEps = studios.flatMap { it.players }.maxOfOrNull { it.episodes.size } ?: 0
+        if (maxExistingEps <= 1) {
+            val genericStudios = GenericSeriesExtractor.extractEpisodesFromDocument(client, normalizedPageUrl, html, doc, baseOrigin)
+            val maxGenericEps = genericStudios.flatMap { it.players }.maxOfOrNull { it.episodes.size } ?: 0
+            if (maxGenericEps > maxExistingEps) {
+                studios.clear()
+                studios.addAll(genericStudios)
             }
         }
 
         val isSeries = studios.any { s -> s.players.any { p -> p.episodes.size > 1 } }
 
         return MediaInfo(
-            url = pageUrl,
+            url = normalizedPageUrl,
             siteType = "anitube",
             title = title,
             originalTitle = originalTitle,
@@ -119,7 +120,7 @@ object AnitubeExtractor {
         )
     }
 
-    fun extractRating(doc: Document, html: String): Pair<String?, String?> {
+    fun extractRating(doc: Document): Pair<String?, String?> {
         // 1. Lexington box з точною оцінкою та голосами (<span>9.6</span>/<span>10</span> (202))
         val lexEl = doc.selectFirst(".lexington-box")
         if (lexEl != null) {

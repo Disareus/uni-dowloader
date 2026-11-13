@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.coordinatorlayout.widget.CoordinatorLayout 
+<androidx.coordinatorlayout.widget.CoordinatorLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -22,44 +22,42 @@
             app:title="@string/app_name"
             app:titleTextColor="@color/text_primary">
 
-            <ImageButton
+            <FrameLayout
                 android:id="@+id/btn_downloads_header"
-                android:layout_width="44dp"
-                android:layout_height="44dp"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
                 android:layout_gravity="end"
                 android:layout_marginEnd="8dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
+                android:clickable="true"
                 android:contentDescription="@string/btn_open_downloads"
-                android:src="@android:drawable/stat_sys_download"
-                app:tint="@color/accent_cyan" />
+                android:focusable="true">
+
+                <ImageView
+                    android:layout_width="24dp"
+                    android:layout_height="24dp"
+                    android:layout_gravity="center"
+                    android:src="@drawable/ic_download"
+                    app:tint="@color/primary" />
+
+                <TextView
+                    android:id="@+id/tv_active_downloads_badge"
+                    android:layout_width="18dp"
+                    android:layout_height="18dp"
+                    android:layout_gravity="top|end"
+                    android:layout_marginTop="6dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_badge_count"
+                    android:gravity="center"
+                    android:textColor="@color/white"
+                    android:textSize="10sp"
+                    android:textStyle="bold"
+                    android:visibility="gone"
+                    tools:text="2"
+                    tools:visibility="visible" />
+            </FrameLayout>
 
         </com.google.android.material.appbar.MaterialToolbar>
-
-        <!-- Segmented Tab Bar: AniTube Catalog & Downloader -->
-        <com.google.android.material.tabs.TabLayout
-            android:id="@+id/tab_layout"
-            android:layout_width="match_parent"
-            android:layout_height="46dp"
-            android:background="@color/aniyomi_surface"
-            app:tabIndicatorColor="@color/accent_cyan"
-            app:tabIndicatorHeight="3dp"
-            app:tabMode="fixed"
-            app:tabGravity="fill"
-            app:tabRippleColor="@color/aniyomi_surface_highlight"
-            app:tabSelectedTextColor="@color/accent_cyan"
-            app:tabTextColor="@color/text_secondary">
-
-            <com.google.android.material.tabs.TabItem
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="🌐 Каталог AniTube" />
-
-            <com.google.android.material.tabs.TabItem
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="📥 Завантажувач" />
-
-        </com.google.android.material.tabs.TabLayout>
 
     </com.google.android.material.appbar.AppBarLayout>
 
@@ -69,142 +67,19 @@
         android:layout_height="match_parent"
         app:layout_behavior="@string/appbar_scrolling_view_behavior">
 
-        <!-- 1. Вбудований перегляд сайту AniTube (Каталог) -->
-        <RelativeLayout
-            android:id="@+id/layout_catalog"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:visibility="visible">
-
-            <ProgressBar
-                android:id="@+id/progress_web_loader"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="3dp"
-                android:layout_alignParentTop="true"
-                android:indeterminate="false"
-                android:max="100"
-                android:progressTint="@color/accent_cyan"
-                android:visibility="gone" />
-
-            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-                android:id="@+id/swipe_refresh_catalog"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:layout_above="@id/layout_web_bottom_bar"
-                android:layout_below="@id/progress_web_loader">
-
-                <WebView
-                    android:id="@+id/webview_anitube"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:background="@color/aniyomi_bg" />
-
-            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
-
-            <!-- Панель швидкої навігації браузера AniTube -->
-            <LinearLayout
-                android:id="@+id/layout_web_bottom_bar"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:layout_alignParentBottom="true"
-                android:background="@color/aniyomi_surface"
-                android:elevation="6dp"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingHorizontal="12dp">
-
-                <ImageButton
-                    android:id="@+id/btn_web_back"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Назад"
-                    android:src="@android:drawable/ic_media_previous"
-                    app:tint="@color/text_primary" />
-
-                <ImageButton
-                    android:id="@+id/btn_web_forward"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:layout_marginStart="4dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Вперед"
-                    android:src="@android:drawable/ic_media_next"
-                    app:tint="@color/text_primary" />
-
-                <ImageButton
-                    android:id="@+id/btn_web_home"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:layout_marginStart="4dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Головна сторінка"
-                    android:src="@android:drawable/ic_menu_today"
-                    app:tint="@color/accent_cyan" />
-
-                <ImageButton
-                    android:id="@+id/btn_web_refresh"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:layout_marginStart="4dp"
-                    android:background="?attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Оновити"
-                    android:src="@android:drawable/ic_menu_rotate"
-                    app:tint="@color/text_primary" />
-
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
-
-                <!-- Кнопка швидкого переходу до меню завантаження поточної сторінки -->
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_web_download_current"
-                    android:layout_width="wrap_content"
-                    android:layout_height="38dp"
-                    android:backgroundTint="@color/accent_cyan"
-                    android:text="📥 Завантажити"
-                    android:textColor="@color/aniyomi_bg"
-                    android:textSize="12sp"
-                    android:textStyle="bold"
-                    android:visibility="gone"
-                    app:cornerRadius="10dp"
-                    tools:visibility="visible" />
-
-            </LinearLayout>
-
-        </RelativeLayout>
-
-        <!-- 2. Екран завантажувача та деталей аніме -->
+        <!-- 1. Головний екран завантажувача та ярликів -->
         <androidx.core.widget.NestedScrollView
             android:id="@+id/scroll_downloader"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:clipToPadding="false"
-            android:paddingBottom="90dp"
-            android:visibility="gone"
-            tools:visibility="visible">
+            android:paddingBottom="96dp"
+            android:visibility="visible">
 
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
-
-                <!-- Кнопка повернення до каталогу AniTube -->
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btn_back_to_catalog"
-                    android:layout_width="match_parent"
-                    android:layout_height="42dp"
-                    android:layout_marginHorizontal="16dp"
-                    android:layout_marginTop="10dp"
-                    android:backgroundTint="@color/aniyomi_surface"
-                    android:text="⬅️ Повернутися до каталогу AniTube"
-                    android:textColor="@color/accent_cyan"
-                    android:textSize="13sp"
-                    app:cornerRadius="12dp"
-                    app:strokeColor="@color/aniyomi_surface_highlight"
-                    app:strokeWidth="1dp" />
 
                 <!-- Security Banner (Debug/Risk Mode) -->
                 <com.google.android.material.card.MaterialCardView
@@ -229,7 +104,7 @@
                         <ImageView
                             android:layout_width="20dp"
                             android:layout_height="20dp"
-                            android:src="@android:drawable/ic_dialog_alert"
+                            android:src="@drawable/ic_warning"
                             app:tint="@color/accent_orange" />
 
                         <TextView
@@ -244,7 +119,7 @@
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
 
-                <!-- URL Input Bar (Sleek Aniyomi Search Pill) -->
+                <!-- URL Input Bar -->
                 <com.google.android.material.card.MaterialCardView
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -252,6 +127,7 @@
                     android:layout_marginTop="10dp"
                     app:cardBackgroundColor="@color/aniyomi_surface"
                     app:cardCornerRadius="16dp"
+                    app:cardElevation="1dp"
                     app:strokeColor="@color/aniyomi_surface_highlight"
                     app:strokeWidth="1dp">
 
@@ -260,15 +136,15 @@
                         android:layout_height="wrap_content"
                         android:gravity="center_vertical"
                         android:orientation="horizontal"
-                        android:paddingStart="14dp"
-                        android:paddingEnd="6dp"
-                        android:paddingVertical="4dp">
+                        android:paddingVertical="4dp"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="6dp">
 
                         <ImageView
                             android:layout_width="20dp"
                             android:layout_height="20dp"
-                            android:src="@android:drawable/ic_menu_search"
-                            app:tint="@color/accent_cyan" />
+                            android:src="@drawable/ic_search"
+                            app:tint="@color/primary" />
 
                         <com.google.android.material.textfield.TextInputEditText
                             android:id="@+id/et_url"
@@ -277,17 +153,43 @@
                             android:layout_marginStart="10dp"
                             android:layout_weight="1"
                             android:background="@null"
-                            android:hint="Вставте посилання або оберіть у каталозі..."
+                            android:hint="@string/url_hint"
+                            android:imeOptions="actionSearch"
                             android:inputType="textUri"
                             android:maxLines="1"
+                            android:paddingVertical="8dp"
                             android:textColor="@color/text_primary"
                             android:textColorHint="@color/text_muted"
                             android:textSize="13sp" />
 
+                        <ImageButton
+                            android:id="@+id/btn_clear_url"
+                            android:layout_width="34dp"
+                            android:layout_height="34dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="@string/btn_clear"
+                            android:padding="7dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_close"
+                            android:visibility="gone"
+                            app:tint="@color/text_muted" />
+
+                        <ImageButton
+                            android:id="@+id/btn_paste_url"
+                            android:layout_width="36dp"
+                            android:layout_height="36dp"
+                            android:layout_marginEnd="4dp"
+                            android:background="?attr/selectableItemBackgroundBorderless"
+                            android:contentDescription="@string/btn_paste"
+                            android:padding="8dp"
+                            android:scaleType="fitCenter"
+                            android:src="@drawable/ic_paste"
+                            app:tint="@color/text_secondary" />
+
                         <ProgressBar
                             android:id="@+id/progress_analyze"
-                            android:layout_width="28dp"
-                            android:layout_height="28dp"
+                            android:layout_width="26dp"
+                            android:layout_height="26dp"
                             android:layout_marginEnd="8dp"
                             android:visibility="gone" />
 
@@ -296,14 +198,143 @@
                             android:layout_width="wrap_content"
                             android:layout_height="40dp"
                             android:backgroundTint="@color/primary_variant"
-                            android:text="Пошук"
+                            android:text="@string/btn_analyze"
+                            android:textColor="@color/white"
                             android:textSize="13sp"
                             app:cornerRadius="12dp" />
 
                     </LinearLayout>
                 </com.google.android.material.card.MaterialCardView>
 
-                <!-- Anime Detail Container (Aniyomi Style) -->
+                <!-- Ярлики сайтів (+ та збережені піктограми) -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/card_shortcuts"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="16dp"
+                    android:layout_marginTop="12dp"
+                    app:cardBackgroundColor="@color/aniyomi_surface"
+                    app:cardCornerRadius="16dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/aniyomi_surface_highlight"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:paddingVertical="12dp">
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:gravity="center_vertical"
+                            android:orientation="horizontal"
+                            android:paddingHorizontal="14dp">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="@string/shortcuts_section_title"
+                                android:textColor="@color/primary"
+                                android:textSize="11sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:id="@+id/tv_shortcuts_hint"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginStart="8dp"
+                                android:layout_weight="1"
+                                android:ellipsize="end"
+                                android:gravity="end"
+                                android:maxLines="1"
+                                android:text="@string/shortcuts_hint"
+                                android:textColor="@color/text_muted"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <androidx.recyclerview.widget.RecyclerView
+                            android:id="@+id/rv_shortcuts"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="10dp"
+                            android:clipToPadding="false"
+                            android:paddingHorizontal="14dp"
+                            tools:itemCount="4"
+                            tools:layoutManager="androidx.recyclerview.widget.LinearLayoutManager"
+                            tools:listitem="@layout/item_shortcut"
+                            tools:orientation="horizontal" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Empty State (Shown before any URL is analyzed) -->
+                <com.google.android.material.card.MaterialCardView
+                    android:id="@+id/container_empty_state"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="16dp"
+                    android:layout_marginTop="14dp"
+                    app:cardBackgroundColor="@color/aniyomi_surface"
+                    app:cardCornerRadius="18dp"
+                    app:cardElevation="1dp"
+                    app:strokeColor="@color/aniyomi_surface_highlight"
+                    app:strokeWidth="1dp">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_horizontal"
+                        android:orientation="vertical"
+                        android:padding="22dp">
+
+                        <ImageView
+                            android:layout_width="44dp"
+                            android:layout_height="44dp"
+                            android:src="@drawable/ic_movie_placeholder"
+                            app:tint="@color/primary" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="12dp"
+                            android:text="@string/empty_downloader_title"
+                            android:textColor="@color/text_primary"
+                            android:textSize="16sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="3dp"
+                            android:text="@string/empty_downloader_subtitle"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="13sp" />
+
+                        <TextView
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="16dp"
+                            android:text="@string/supported_platforms_label"
+                            android:textColor="@color/primary"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="6dp"
+                            android:gravity="center"
+                            android:lineSpacingExtra="3dp"
+                            android:text="@string/supported_platforms_list"
+                            android:textColor="@color/text_muted"
+                            android:textSize="12sp" />
+                    </LinearLayout>
+                </com.google.android.material.card.MaterialCardView>
+
+                <!-- Media Detail Container -->
                 <LinearLayout
                     android:id="@+id/container_media_detail"
                     android:layout_width="match_parent"
@@ -316,18 +347,18 @@
                     <RelativeLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="16dp">
+                        android:layout_marginTop="14dp">
 
                         <ImageView
                             android:id="@+id/iv_backdrop"
                             android:layout_width="match_parent"
-                            android:layout_height="180dp"
-                            android:alpha="0.25"
+                            android:layout_height="185dp"
+                            android:alpha="0.22"
                             android:scaleType="centerCrop" />
 
                         <View
                             android:layout_width="match_parent"
-                            android:layout_height="180dp"
+                            android:layout_height="185dp"
                             android:background="@drawable/gradient_scrim_bottom" />
 
                         <!-- Poster & Metadata Row -->
@@ -344,7 +375,7 @@
                                 android:layout_width="105dp"
                                 android:layout_height="150dp"
                                 app:cardCornerRadius="14dp"
-                                app:cardElevation="6dp"
+                                app:cardElevation="4dp"
                                 app:strokeColor="@color/aniyomi_surface_highlight"
                                 app:strokeWidth="1dp">
 
@@ -353,7 +384,8 @@
                                     android:layout_width="match_parent"
                                     android:layout_height="match_parent"
                                     android:background="@color/aniyomi_surface_elevated"
-                                    android:scaleType="centerCrop" />
+                                    android:scaleType="centerCrop"
+                                    android:src="@drawable/ic_movie_placeholder" />
                             </com.google.android.material.card.MaterialCardView>
 
                             <LinearLayout
@@ -364,52 +396,58 @@
                                 android:orientation="vertical">
 
                                 <!-- Source Badge, Quality Pill & Rating -->
-                                <LinearLayout
-                                    android:layout_width="wrap_content"
+                                <HorizontalScrollView
+                                    android:layout_width="match_parent"
                                     android:layout_height="wrap_content"
-                                    android:gravity="center_vertical"
-                                    android:orientation="horizontal">
+                                    android:scrollbars="none">
 
-                                    <TextView
-                                        android:id="@+id/tv_badge_site"
+                                    <LinearLayout
                                         android:layout_width="wrap_content"
                                         android:layout_height="wrap_content"
-                                        android:background="@drawable/bg_badge_accent"
-                                        android:paddingHorizontal="8dp"
-                                        android:paddingVertical="3dp"
-                                        android:textColor="@color/accent_cyan"
-                                        android:textSize="11sp"
-                                        android:textStyle="bold"
-                                        tools:text="ANITUBE" />
+                                        android:gravity="center_vertical"
+                                        android:orientation="horizontal">
 
-                                    <TextView
-                                        android:id="@+id/tv_badge_ep_count"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:layout_marginStart="6dp"
-                                        android:background="@drawable/bg_badge_muted"
-                                        android:paddingHorizontal="8dp"
-                                        android:paddingVertical="3dp"
-                                        android:textColor="@color/text_secondary"
-                                        android:textSize="11sp"
-                                        tools:text="12 серій" />
+                                        <TextView
+                                            android:id="@+id/tv_badge_site"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:background="@drawable/bg_badge_accent"
+                                            android:paddingHorizontal="8dp"
+                                            android:paddingVertical="3dp"
+                                            android:textColor="@color/primary"
+                                            android:textSize="11sp"
+                                            android:textStyle="bold"
+                                            tools:text="SFLIX" />
 
-                                    <!-- Рейтинг аніме -->
-                                    <TextView
-                                        android:id="@+id/tv_badge_rating"
-                                        android:layout_width="wrap_content"
-                                        android:layout_height="wrap_content"
-                                        android:layout_marginStart="6dp"
-                                        android:background="@drawable/bg_badge_rating"
-                                        android:paddingHorizontal="8dp"
-                                        android:paddingVertical="3dp"
-                                        android:textColor="@color/accent_orange"
-                                        android:textSize="11sp"
-                                        android:textStyle="bold"
-                                        android:visibility="gone"
-                                        tools:visibility="visible"
-                                        tools:text="★ 9.6/10 (202)" />
-                                </LinearLayout>
+                                        <TextView
+                                            android:id="@+id/tv_badge_ep_count"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginStart="6dp"
+                                            android:background="@drawable/bg_badge_muted"
+                                            android:paddingHorizontal="8dp"
+                                            android:paddingVertical="3dp"
+                                            android:textColor="@color/text_secondary"
+                                            android:textSize="11sp"
+                                            tools:text="12 серій" />
+
+                                        <!-- Рейтинг -->
+                                        <TextView
+                                            android:id="@+id/tv_badge_rating"
+                                            android:layout_width="wrap_content"
+                                            android:layout_height="wrap_content"
+                                            android:layout_marginStart="6dp"
+                                            android:background="@drawable/bg_badge_rating"
+                                            android:paddingHorizontal="8dp"
+                                            android:paddingVertical="3dp"
+                                            android:textColor="@color/accent_orange"
+                                            android:textSize="11sp"
+                                            android:textStyle="bold"
+                                            android:visibility="gone"
+                                            tools:text="★ 9.6/10"
+                                            tools:visibility="visible" />
+                                    </LinearLayout>
+                                </HorizontalScrollView>
 
                                 <TextView
                                     android:id="@+id/tv_media_title"
@@ -421,7 +459,7 @@
                                     android:textColor="@color/text_primary"
                                     android:textSize="18sp"
                                     android:textStyle="bold"
-                                    tools:text="Назва Аніме / Серіалу" />
+                                    tools:text="Назва Серіалу / Фільму" />
 
                                 <TextView
                                     android:id="@+id/tv_media_orig_title"
@@ -432,27 +470,49 @@
                                     android:maxLines="1"
                                     android:textColor="@color/text_muted"
                                     android:textSize="12sp"
-                                    tools:text="Sousou no Frieren" />
+                                    tools:text="Original Title" />
 
                             </LinearLayout>
                         </LinearLayout>
                     </RelativeLayout>
 
-                    <!-- Description (Expandable) -->
-                    <TextView
-                        android:id="@+id/tv_media_desc"
+                    <!-- Description (Tap to Expand/Collapse) -->
+                    <LinearLayout
+                        android:id="@+id/container_description"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:layout_marginHorizontal="16dp"
                         android:layout_marginTop="12dp"
-                        android:ellipsize="end"
-                        android:lineSpacingExtra="3dp"
-                        android:maxLines="3"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="13sp"
-                        tools:text="Короткий синопсис аніме та опис сюжету..." />
+                        android:background="?attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true"
+                        android:orientation="vertical">
 
-                    <!-- Dubbing Studio Section (Anitube / UAKino Voice Selection) -->
+                        <TextView
+                            android:id="@+id/tv_media_desc"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:ellipsize="end"
+                            android:lineSpacingExtra="3dp"
+                            android:maxLines="3"
+                            android:textColor="@color/text_secondary"
+                            android:textSize="13sp"
+                            tools:text="Короткий синопсис..." />
+
+                        <TextView
+                            android:id="@+id/tv_desc_toggle"
+                            android:layout_width="wrap_content"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="4dp"
+                            android:text="@string/desc_expand_more"
+                            android:textColor="@color/primary"
+                            android:textSize="11sp"
+                            android:textStyle="bold"
+                            android:visibility="gone"
+                            tools:visibility="visible" />
+                    </LinearLayout>
+
+                    <!-- Dubbing Studio Section -->
                     <LinearLayout
                         android:id="@+id/container_studios_section"
                         android:layout_width="match_parent"
@@ -465,7 +525,7 @@
                             android:layout_height="wrap_content"
                             android:layout_marginHorizontal="16dp"
                             android:text="ОЗВУЧЕННЯ ТА ДАБЕРИ"
-                            android:textColor="@color/accent_cyan"
+                            android:textColor="@color/primary"
                             android:textSize="12sp"
                             android:textStyle="bold" />
 
@@ -486,7 +546,7 @@
                         </HorizontalScrollView>
                     </LinearLayout>
 
-                    <!-- Player Balancers Pills (Ashdi / Tortuga / Moon / Fenix / PeerTube) -->
+                    <!-- Player Balancers Pills -->
                     <LinearLayout
                         android:id="@+id/container_players_bar"
                         android:layout_width="match_parent"
@@ -521,7 +581,7 @@
                         </HorizontalScrollView>
                     </LinearLayout>
 
-                    <!-- Single Video Actions (For YouTube, TikTok, Instagram, Single Movie) -->
+                    <!-- Single Video Actions -->
                     <LinearLayout
                         android:id="@+id/container_single_video_actions"
                         android:layout_width="match_parent"
@@ -549,8 +609,8 @@
                                 <TextView
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:text="⚡ ВІДЕО ГОТОВЕ"
-                                    android:textColor="@color/accent_cyan"
+                                    android:text="ВІДЕО ГОТОВЕ"
+                                    android:textColor="@color/primary"
                                     android:textSize="12sp"
                                     android:textStyle="bold" />
 
@@ -558,7 +618,7 @@
                                     android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
                                     android:layout_marginTop="4dp"
-                                    android:text="Одиночне відео без серій. Оберіть дію:"
+                                    android:text="Одиночне відео без серій. Оберіть якість нижче або дію:"
                                     android:textColor="@color/text_secondary"
                                     android:textSize="13sp" />
 
@@ -573,36 +633,39 @@
                                         style="@style/Widget.Material3.Button.OutlinedButton"
                                         android:layout_width="0dp"
                                         android:layout_height="46dp"
-                                        android:layout_weight="1"
                                         android:layout_marginEnd="6dp"
-                                        android:text="▶️ Перегляд"
+                                        android:layout_weight="1"
+                                        android:text="@string/btn_preview"
                                         android:textColor="@color/text_primary"
                                         app:cornerRadius="12dp"
+                                        app:icon="@drawable/ic_play"
+                                        app:iconTint="@color/primary"
                                         app:strokeColor="@color/aniyomi_surface_highlight" />
 
                                     <com.google.android.material.button.MaterialButton
                                         android:id="@+id/btn_single_download"
                                         android:layout_width="0dp"
                                         android:layout_height="46dp"
-                                        android:layout_weight="1"
                                         android:layout_marginStart="6dp"
+                                        android:layout_weight="1"
                                         android:backgroundTint="@color/primary_variant"
-                                        android:text="📥 Завантажити"
+                                        android:text="@string/btn_download_selected"
                                         android:textColor="@color/white"
-                                        app:cornerRadius="12dp" />
+                                        app:cornerRadius="12dp"
+                                        app:icon="@drawable/ic_download"
+                                        app:iconTint="@color/white" />
                                 </LinearLayout>
                             </LinearLayout>
                         </com.google.android.material.card.MaterialCardView>
                     </LinearLayout>
 
-                    <!-- Episodes Section (Only for Multi-Episode Media) -->
+                    <!-- Episodes Section -->
                     <LinearLayout
                         android:id="@+id/container_episodes_section"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="vertical">
 
-                        <!-- Episodes Header & Selection Bar -->
                         <LinearLayout
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
@@ -626,12 +689,11 @@
                                 style="@style/Widget.Material3.Button.TextButton"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="Вибрати всі"
-                                android:textColor="@color/accent_cyan"
+                                android:text="@string/btn_select_all"
+                                android:textColor="@color/primary"
                                 android:textSize="12sp" />
                         </LinearLayout>
 
-                        <!-- Episodes RecyclerView -->
                         <androidx.recyclerview.widget.RecyclerView
                             android:id="@+id/rv_episodes"
                             android:layout_width="match_parent"
@@ -648,9 +710,127 @@
 
         </androidx.core.widget.NestedScrollView>
 
+        <!-- 2. Вбудований перегляд сайту з ярлика (відкривається лише при натисканні на ярлик) -->
+        <RelativeLayout
+            android:id="@+id/layout_browser"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/aniyomi_bg"
+            android:visibility="gone">
+
+            <ProgressBar
+                android:id="@+id/progress_web_loader"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="3dp"
+                android:layout_alignParentTop="true"
+                android:indeterminate="false"
+                android:max="100"
+                android:progressTint="@color/primary"
+                android:visibility="gone" />
+
+            <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+                android:id="@+id/swipe_refresh_catalog"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_above="@id/layout_web_bottom_bar"
+                android:layout_below="@id/progress_web_loader">
+
+                <WebView
+                    android:id="@+id/webview_shortcut"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@color/aniyomi_bg" />
+
+            </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+
+            <!-- Панель навігації браузера -->
+            <LinearLayout
+                android:id="@+id/layout_web_bottom_bar"
+                android:layout_width="match_parent"
+                android:layout_height="56dp"
+                android:layout_alignParentBottom="true"
+                android:background="@color/aniyomi_surface"
+                android:elevation="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="10dp">
+
+                <ImageButton
+                    android:id="@+id/btn_web_close"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Повернутися"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_close"
+                    app:tint="@color/primary" />
+
+                <ImageButton
+                    android:id="@+id/btn_web_back"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="2dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Назад"
+                    android:padding="9dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_arrow_back"
+                    app:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/btn_web_forward"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="2dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Вперед"
+                    android:padding="9dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_arrow_forward"
+                    app:tint="@color/text_primary" />
+
+                <ImageButton
+                    android:id="@+id/btn_web_refresh"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="2dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Оновити"
+                    android:padding="9dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_refresh"
+                    app:tint="@color/text_primary" />
+
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btn_web_download_current"
+                    android:layout_width="wrap_content"
+                    android:layout_height="40dp"
+                    android:backgroundTint="@color/primary_variant"
+                    android:text="@string/btn_download_current"
+                    android:textColor="@color/white"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:visibility="gone"
+                    app:cornerRadius="12dp"
+                    app:icon="@drawable/ic_download"
+                    app:iconSize="16dp"
+                    app:iconTint="@color/white"
+                    tools:visibility="visible" />
+
+            </LinearLayout>
+
+        </RelativeLayout>
+
     </FrameLayout>
 
-    <!-- Bottom Download Floating Bar (Aniyomi Floating Action Dock) -->
+    <!-- Bottom Download Floating Bar -->
     <com.google.android.material.card.MaterialCardView
         android:id="@+id/card_bottom_download_bar"
         android:layout_width="match_parent"
@@ -661,7 +841,7 @@
         android:visibility="gone"
         app:cardBackgroundColor="@color/aniyomi_surface_elevated"
         app:cardCornerRadius="20dp"
-        app:cardElevation="12dp"
+        app:cardElevation="10dp"
         app:strokeColor="@color/aniyomi_surface_highlight"
         app:strokeWidth="1.5dp"
         tools:visibility="visible">
@@ -673,7 +853,6 @@
             android:orientation="horizontal"
             android:padding="12dp">
 
-            <!-- Selected Episodes Count & Quality Selector -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
@@ -693,39 +872,38 @@
                 <LinearLayout
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="4dp"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
                     <Spinner
                         android:id="@+id/spinner_quality"
                         android:layout_width="wrap_content"
-                        android:layout_height="28dp"
+                        android:layout_height="30dp"
                         android:background="@drawable/bg_spinner_pill"
-                        android:dropDownWidth="120dp" />
+                        android:dropDownWidth="130dp" />
 
                     <Spinner
                         android:id="@+id/spinner_format"
                         android:layout_width="wrap_content"
-                        android:layout_height="28dp"
+                        android:layout_height="30dp"
                         android:layout_marginStart="8dp"
                         android:background="@drawable/bg_spinner_pill"
-                        android:dropDownWidth="80dp" />
+                        android:dropDownWidth="84dp" />
                 </LinearLayout>
 
             </LinearLayout>
 
-            <!-- Download Action Button -->
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btn_download_selected"
                 android:layout_width="wrap_content"
                 android:layout_height="48dp"
                 android:backgroundTint="@color/primary_variant"
-                android:text="Завантажити"
+                android:text="@string/btn_download_selected"
                 android:textColor="@color/white"
                 android:textSize="14sp"
                 app:cornerRadius="16dp"
-                app:icon="@android:drawable/stat_sys_download"
+                app:icon="@drawable/ic_download"
                 app:iconTint="@color/white" />
 
         </LinearLayout>

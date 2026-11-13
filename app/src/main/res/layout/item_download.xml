@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.google.android.material.card.MaterialCardView 
+<com.google.android.material.card.MaterialCardView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -28,6 +28,7 @@
                 android:id="@+id/tv_dl_title"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
+                android:layout_marginEnd="8dp"
                 android:layout_weight="1"
                 android:ellipsize="end"
                 android:maxLines="1"
@@ -46,6 +47,17 @@
                 tools:text="74.5%" />
 
         </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_dl_subtitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/text_muted"
+            android:textSize="11sp"
+            tools:text="Озвучення: Далі Буде • MP4" />
 
         <com.google.android.material.progressindicator.LinearProgressIndicator
             android:id="@+id/progress_dl"
@@ -69,17 +81,46 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="2"
                 android:textColor="@color/text_secondary"
                 android:textSize="12sp"
                 tools:text="5.2 MB/s • Залишилось 12с" />
 
             <ImageButton
-                android:id="@+id/btn_dl_cancel"
-                android:layout_width="32dp"
-                android:layout_height="32dp"
+                android:id="@+id/btn_dl_play"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Cancel download"
-                android:src="@android:drawable/ic_menu_close_clear_cancel"
+                android:contentDescription="Відтворити"
+                android:padding="7dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_play"
+                android:visibility="gone"
+                app:tint="@color/accent_green"
+                tools:visibility="visible" />
+
+            <ImageButton
+                android:id="@+id/btn_dl_retry"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Повторити"
+                android:padding="7dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_replay"
+                android:visibility="gone"
+                app:tint="@color/accent_orange" />
+
+            <ImageButton
+                android:id="@+id/btn_dl_cancel"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="Скасувати"
+                android:padding="7dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_close"
                 app:tint="@color/danger" />
 
         </LinearLayout>

@@ -15,10 +15,11 @@ import java.util.regex.Pattern
 
 object MoonAnimeExtractor {
 
-    private const val DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
     private val IFRAME_SRC_PATTERN = Pattern.compile("<iframe[^>]+src=[\"']([^\"']+)[\"']")
+    private val FILE_PATTERN = Pattern.compile("file\\s*:\\s*[\"']([^\"']+)[\"']")
+    private val M3U8_PATTERN = Pattern.compile("(https?://[^\\s\"'<>]+?\\.m3u8[^\\s\"'<>]*)")
+    private val MP4_PATTERN = Pattern.compile("(https?://[^\\s\"'<>]+?\\.mp4[^\\s\"'<>]*)")
+    private val OUTER_ATOB_PATTERN = Pattern.compile("atob\\([\"']([A-Za-z0-9+/=]{100,})[\"']\\)")
     private val SLUG_PATTERN = Pattern.compile("/(?:iframe|embed)/([a-zA-Z0-9_-]+)")
     private val VIDEO_SLUG_JS_PATTERN = Pattern.compile("var\\s+videoSlug\\s*=\\s*[\"']([^\"']+)[\"']")
     private val INNER_KEY_PATTERN = Pattern.compile("function\\s+_0xd\\([^)]*\\)\\s*\\{\\s*var\\s+k\\s*=\\s*[\"']([^\"']+)[\"']")
@@ -39,12 +40,12 @@ object MoonAnimeExtractor {
         if (streams.isNotEmpty()) return streams
 
         // Якщо первинний домен (наприклад, moonanime.net) дав помилку, пробуємо альтернативний moonanime.art (або навпаки)
-        if (iframeUrl.contains("moonanime.net")) {
-            val altUrl = iframeUrl.replace("moonanime.net", "moonanime.art")
+        if (iframeUrl.contains("moonanime.net", ignoreCase = true)) {
+            val altUrl = iframeUrl.replace("moonanime.net", "moonanime.art", ignoreCase = true)
             val altStreams = extractStreamsInternal(client, altUrl, referer)
             if (altStreams.isNotEmpty()) return altStreams
-        } else if (iframeUrl.contains("moonanime.art")) {
-            val altUrl = iframeUrl.replace("moonanime.art", "moonanime.net")
+        } else if (iframeUrl.contains("moonanime.art", ignoreCase = true)) {
+            val altUrl = iframeUrl.replace("moonanime.art", "moonanime.net", ignoreCase = true)
             val altStreams = extractStreamsInternal(client, altUrl, referer)
             if (altStreams.isNotEmpty()) return altStreams
         }
@@ -56,16 +57,13 @@ object MoonAnimeExtractor {
         return try {
             val request = Request.Builder()
                 .url(iframeUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8")
                 .header("Accept-Language", "uk,en-US;q=0.9,en;q=0.8")
                 .header("Referer", referer ?: "https://anitube.in.ua/")
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful || response.body == null) return emptyList()
-
-            val html = response.body?.string() ?: ""
+            val html = ExtractorUtils.executeForString(client, request) ?: return emptyList()
 
             // 1. Двоступеневе XOR декодування MoonAnime
             val outerJs = decodeMoonanimeOuterJs(html)
@@ -75,8 +73,7 @@ object MoonAnimeExtractor {
             }
 
             // 2. Звичайний file: "..." (PlayerJS формат у вихідному HTML)
-            val filePattern = Pattern.compile("file\\s*:\\s*[\"']([^\"']+)[\"']")
-            val fm = filePattern.matcher(html)
+            val fm = FILE_PATTERN.matcher(html)
             if (fm.find()) {
                 val fStr = fm.group(1)?.trim() ?: ""
                 val qualities = PlayerJsDecoder.parsePlayerJsQualities(fStr, iframeUrl)
@@ -84,8 +81,7 @@ object MoonAnimeExtractor {
             }
 
             // 3. Прямий m3u8 у вихідному HTML
-            val m3u8Pattern = Pattern.compile("(https?://[^\\s\"'<>]+?\\.m3u8[^\\s\"'<>]*)")
-            val mm = m3u8Pattern.matcher(html)
+            val mm = M3U8_PATTERN.matcher(html)
             if (mm.find()) {
                 val m3u8Url = mm.group(1) ?: ""
                 val resolved = HlsStreamResolver.resolveMasterPlaylist(client, m3u8Url, iframeUrl)
@@ -94,8 +90,7 @@ object MoonAnimeExtractor {
             }
 
             // 4. Прямий mp4 у коді
-            val mp4Pattern = Pattern.compile("(https?://[^\\s\"'<>]+?\\.mp4[^\\s\"'<>]*)")
-            val mpM = mp4Pattern.matcher(html)
+            val mpM = MP4_PATTERN.matcher(html)
             if (mpM.find()) {
                 val mp4Url = mpM.group(1) ?: ""
                 return listOf(StreamQuality("720p (Moon MP4)", 720, mp4Url, false))
@@ -164,16 +159,13 @@ object MoonAnimeExtractor {
         return try {
             val mReq = Request.Builder()
                 .url(rawVideoUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "*/*")
                 .header("Referer", iframeUrl)
                 .header("Origin", "https://${URI(iframeUrl).host}")
                 .build()
 
-            val mResp = client.newCall(mReq).execute()
-            if (!mResp.isSuccessful || mResp.body == null) return emptyList()
-
-            val mText = mResp.body?.string() ?: ""
+            val mText = ExtractorUtils.executeForString(client, mReq) ?: return emptyList()
             val vm = M3U8_VARIANT_PATTERN.matcher(mText)
             if (!vm.find()) {
                 val directMaster = deriveDirectMasterFromContent(mText)
@@ -187,16 +179,13 @@ object MoonAnimeExtractor {
             val variantUrl = vm.group(1) ?: return emptyList()
             val vReq = Request.Builder()
                 .url(variantUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "*/*")
                 .header("Referer", iframeUrl)
                 .header("Origin", "https://${URI(iframeUrl).host}")
                 .build()
 
-            val vResp = client.newCall(vReq).execute()
-            if (!vResp.isSuccessful || vResp.body == null) return emptyList()
-
-            val vText = vResp.body?.string() ?: ""
+            val vText = ExtractorUtils.executeForString(client, vReq) ?: return emptyList()
             val directMaster = deriveDirectMasterFromContent(vText) ?: return emptyList()
 
             val resolved = HlsStreamResolver.resolveMasterPlaylist(client, directMaster, iframeUrl)
@@ -243,7 +232,7 @@ object MoonAnimeExtractor {
             val body = jsonBody.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
             val req = Request.Builder()
                 .url(ticketUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "application/json, text/plain, */*")
                 .header("Accept-Language", "uk,en-US;q=0.9,en;q=0.8")
                 .header("Referer", iframeUrl)
@@ -251,10 +240,7 @@ object MoonAnimeExtractor {
                 .post(body)
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return emptyList()
-
-            val respJson = resp.body?.string() ?: ""
+            val respJson = ExtractorUtils.executeForString(client, req) ?: return emptyList()
             val obj = JSONObject(respJson)
             if (!obj.optBoolean("ok", false)) return emptyList()
 
@@ -293,11 +279,10 @@ object MoonAnimeExtractor {
     }
 
     fun decodeMoonanimeOuterJs(html: String): String {
-        val pattern = Pattern.compile("atob\\([\"']([A-Za-z0-9+/=]{100,})[\"']\\)")
-        val m = pattern.matcher(html)
+        val m = OUTER_ATOB_PATTERN.matcher(html)
         if (!m.find()) return ""
         val b64 = m.group(1) ?: return ""
-        val b = decodeBase64Bytes(b64)
+        val b = ExtractorUtils.decodeBase64Bytes(b64)
         if (b.size <= 33) return ""
         return try {
             var state = b[0].toInt() and 0xFF
@@ -357,7 +342,7 @@ object MoonAnimeExtractor {
 
     fun decodeInnerXor(encoded: String, key: String): String {
         return try {
-            val raw = decodeBase64Bytes(encoded)
+            val raw = ExtractorUtils.decodeBase64Bytes(encoded)
             val keyBytes = key.toByteArray(StandardCharsets.UTF_8)
             val out = ByteArray(raw.size)
             for (i in raw.indices) {
@@ -367,23 +352,6 @@ object MoonAnimeExtractor {
             safeUrlDecode(unquoted)
         } catch (e: Exception) {
             ""
-        }
-    }
-
-    fun decodeBase64Bytes(raw: String): ByteArray {
-        var s = raw.trim().replace('-', '+').replace('_', '/')
-        val pad = (4 - s.length % 4) % 4
-        if (pad in 1..3) {
-            s += "=".repeat(pad)
-        }
-        return try {
-            android.util.Base64.decode(s, android.util.Base64.DEFAULT)
-        } catch (e: Throwable) {
-            try {
-                java.util.Base64.getDecoder().decode(s)
-            } catch (ex: Throwable) {
-                ByteArray(0)
-            }
         }
     }
 

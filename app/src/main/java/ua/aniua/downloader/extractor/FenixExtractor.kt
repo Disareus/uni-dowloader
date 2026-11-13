@@ -1,6 +1,5 @@
 package ua.aniua.downloader.extractor
 
-import android.util.Base64
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
@@ -16,28 +15,16 @@ import java.util.regex.Pattern
 
 object FenixExtractor {
 
-    private const val DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
     private val MEDIA_ACCESS_PATTERN = Pattern.compile("window\\.FENIX_MEDIA_ACCESS\\s*=\\s*(\\{[\\s\\S]*?\\});")
     private val PLAYLIST_PATTERN = Pattern.compile("window\\.FENIX_PLAYLIST\\s*=\\s*(\\{[\\s\\S]*?\\});")
 
     fun isFenixUrl(url: String): Boolean {
         val lower = url.lowercase()
-        return lower.contains("fenixplay") || lower.contains("fenix") || lower.contains("fnx.")
-    }
-
-    private fun decodeBase64Safe(raw: String): String {
-        var s = raw.trim().replace('-', '+').replace('_', '/')
-        val pad = (4 - s.length % 4) % 4
-        if (pad > 0 && pad < 4) {
-            s += "=".repeat(pad)
-        }
-        return try {
-            val bytes = Base64.decode(s, Base64.DEFAULT)
-            String(bytes, Charsets.UTF_8)
-        } catch (e: Exception) {
-            ""
+        val host = try { URI(ExtractorUtils.ensureHttpsScheme(lower)).host ?: "" } catch (_: Exception) { "" }
+        return if (host.isNotEmpty()) {
+            host.contains("fenixplay") || host.contains("fenix") || host.contains("fnx.")
+        } else {
+            lower.contains("fenixplay") || lower.contains("fnx.")
         }
     }
 
@@ -48,14 +35,11 @@ object FenixExtractor {
         try {
             val req = Request.Builder()
                 .url(url)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Referer", referer ?: "https://anitube.in.ua/")
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return emptyList()
-
-            val html = resp.body?.string() ?: return emptyList()
+            val html = ExtractorUtils.executeForString(client, req) ?: return emptyList()
 
             // 1. Отримуємо токен доступу до медіа-сервера
             var mediaToken: String? = null
@@ -86,7 +70,7 @@ object FenixExtractor {
                 val uri = URI(url)
                 if (uri.path.contains("/vod/")) {
                     val rawPart = uri.path.substringAfter("/vod/").substringBefore(".").substringBefore("?")
-                    val decodedStr = decodeBase64Safe(rawPart)
+                    val decodedStr = ExtractorUtils.decodeBase64Utf8(rawPart)
                     if (decodedStr.isNotEmpty()) {
                         val vodJson = JsonParser.parseString(decodedStr).asJsonObject
                         if (vodJson.has("e")) epNum = vodJson.get("e").asInt
@@ -105,22 +89,19 @@ object FenixExtractor {
                         }
                     }
                 }
-            } catch (ignored: Exception) {}
+            } catch (_: Exception) {}
 
             // 4. Запитуємо детальну інформацію про серію через Fenix Playback API
             val apiUrl = "https://fenixplay.xyz/api/playback/$slug/episodes/$edition/$epNum"
             val apiReq = Request.Builder()
                 .url(apiUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Referer", url)
                 .header("X-Fenix-Playback", playbackToken)
                 .header("Accept", "application/json")
                 .build()
 
-            val apiResp = client.newCall(apiReq).execute()
-            if (!apiResp.isSuccessful || apiResp.body == null) return emptyList()
-
-            val apiBody = apiResp.body?.string() ?: return emptyList()
+            val apiBody = ExtractorUtils.executeForString(client, apiReq) ?: return emptyList()
             val apiObj = JsonParser.parseString(apiBody).asJsonObject
             val epObj = apiObj.getAsJsonObject("episode") ?: return emptyList()
 
@@ -187,8 +168,7 @@ object FenixExtractor {
                 streams.add(sqAvc)
             }
 
-        } catch (e: Exception) {
-            e.printStackTrace()
+        } catch (_: Exception) {
         }
 
         return streams
@@ -196,7 +176,7 @@ object FenixExtractor {
 
     private fun authorizeUrl(url: String?, token: String?): String? {
         if (url.isNullOrEmpty()) return null
-        if (token.isNullOrEmpty()) return url
+        if (token.isNullOrEmpty() || url.contains("token=")) return url
         val sep = if (url.contains("?")) "&" else "?"
         return "$url${sep}token=$token"
     }
@@ -205,13 +185,10 @@ object FenixExtractor {
         return try {
             val req = Request.Builder()
                 .url(pageUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return null
-
-            val html = resp.body?.string() ?: return null
+            val html = ExtractorUtils.executeForString(client, req) ?: return null
             val mPlaylist = PLAYLIST_PATTERN.matcher(html)
             if (!mPlaylist.find()) return null
 

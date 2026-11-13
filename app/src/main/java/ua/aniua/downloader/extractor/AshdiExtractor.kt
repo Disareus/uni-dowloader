@@ -1,8 +1,6 @@
 package ua.aniua.downloader.extractor
 
-import com.google.gson.JsonArray
 import com.google.gson.JsonElement
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -20,14 +18,11 @@ object AshdiExtractor {
         return try {
             val request = Request.Builder()
                 .url(iframeUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Referer", referer ?: iframeUrl)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful || response.body == null) return emptyList()
-
-            val html = response.body?.string() ?: ""
+            val html = ExtractorUtils.executeForString(client, request) ?: return emptyList()
             val fileMatcher = FILE_PATTERN.matcher(html)
             if (fileMatcher.find()) {
                 var fileVal = fileMatcher.group(1)?.trim() ?: ""
@@ -94,14 +89,11 @@ object AshdiExtractor {
         try {
             val request = Request.Builder()
                 .url(serialUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Referer", serialUrl)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful || response.body == null) return emptyList()
-
-            val html = response.body?.string() ?: ""
+            val html = ExtractorUtils.executeForString(client, request) ?: return emptyList()
             val matcher = FILE_PATTERN.matcher(html)
             if (!matcher.find()) return emptyList()
 

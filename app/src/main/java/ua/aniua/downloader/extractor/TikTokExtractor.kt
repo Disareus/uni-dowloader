@@ -12,9 +12,6 @@ import java.util.regex.Pattern
 
 object TikTokExtractor {
 
-    private const val DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-
     private val TIKTOK_URL_PATTERN = Pattern.compile(
         "(?:https?://)?(?:www\\.|m\\.|vm\\.|vt\\.)?tiktok\\.com/(?:@[a-zA-Z0-9_.-]+/video/\\d+|[a-zA-Z0-9_-]+|t/[a-zA-Z0-9_-]+)",
         Pattern.CASE_INSENSITIVE
@@ -51,14 +48,12 @@ object TikTokExtractor {
 
             val req = Request.Builder()
                 .url(apiUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "application/json")
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return null
-
-            val json = JSONObject(resp.body?.string() ?: "")
+            val body = ExtractorUtils.executeForString(client, req) ?: return null
+            val json = JSONObject(body)
             if (json.optInt("code", -1) != 0) return null
 
             val data = json.optJSONObject("data") ?: return null
@@ -109,13 +104,11 @@ object TikTokExtractor {
 
             val req = Request.Builder()
                 .url(oEmbedUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return null
-
-            val json = JSONObject(resp.body?.string() ?: "")
+            val body = ExtractorUtils.executeForString(client, req) ?: return null
+            val json = JSONObject(body)
             val title = json.optString("title", "TikTok Відео")
             val author = json.optString("author_name", "")
             val thumbnail = json.optString("thumbnail_url", "")

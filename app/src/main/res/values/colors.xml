@@ -1,25 +1,25 @@
 <resources>
-    <!-- Aniyomi Dark OLED Palette -->
-    <color name="aniyomi_bg">#0A0B0E</color>
-    <color name="aniyomi_surface">#14161F</color>
-    <color name="aniyomi_surface_elevated">#1C1E2B</color>
-    <color name="aniyomi_surface_highlight">#25283A</color>
-    
-    <!-- Accent colors -->
-    <color name="primary">#8A2BE2</color>
-    <color name="primary_variant">#7C4DFF</color>
-    <color name="primary_container">#2B1B4D</color>
-    <color name="accent_cyan">#00E5FF</color>
-    <color name="accent_green">#00E676</color>
-    <color name="accent_orange">#FF9100</color>
-    <color name="danger">#FF5252</color>
+    <!-- Vanilla Cream Light Palette -->
+    <color name="aniyomi_bg">#FAF3E6</color>
+    <color name="aniyomi_surface">#FFFBF3</color>
+    <color name="aniyomi_surface_elevated">#F3E7D3</color>
+    <color name="aniyomi_surface_highlight">#E4D3B7</color>
 
-    <!-- Text colors -->
-    <color name="text_primary">#FFFFFF</color>
-    <color name="text_secondary">#9DA2B4</color>
-    <color name="text_muted">#686D7F</color>
+    <!-- Warm Caramel & Amber Accents -->
+    <color name="primary">#A35A1F</color>
+    <color name="primary_variant">#B86B2B</color>
+    <color name="primary_container">#F4DEC3</color>
+    <color name="accent_cyan">#9A5018</color>
+    <color name="accent_green">#2E7D4F</color>
+    <color name="accent_orange">#C96A1B</color>
+    <color name="danger">#C63D3D</color>
+
+    <!-- Espresso & Cocoa Text -->
+    <color name="text_primary">#2B2118</color>
+    <color name="text_secondary">#665546</color>
+    <color name="text_muted">#968372</color>
 
     <!-- Overlay & Scrim -->
-    <color name="backdrop_scrim">#CC0A0B0E</color>
+    <color name="backdrop_scrim">#CCFAF3E6</color>
     <color name="white">#FFFFFF</color>
 </resources>

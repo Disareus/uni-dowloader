@@ -73,13 +73,10 @@ object DlePlaylistParser {
                 .url(ajaxUrl)
                 .header("Referer", referer)
                 .header("X-Requested-With", "XMLHttpRequest")
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful || response.body == null) return emptyList()
-
-            val raw = response.body?.string()?.trim() ?: return emptyList()
+            val raw = ExtractorUtils.executeForString(client, request)?.trim() ?: return emptyList()
             var playlistHtml = raw
 
             if (raw.startsWith("{")) {
@@ -177,19 +174,7 @@ object DlePlaylistParser {
                 studioName = "$studioName (Субтитри)"
             }
 
-            var pId = "player"
-            var pName = "Плеєр"
-            if (iframeUrl.contains("ashdi")) {
-                pId = "ashdi"; pName = "Ashdi"
-            } else if (iframeUrl.contains("tortuga")) {
-                pId = "tortuga"; pName = "Tortuga"
-            } else if (MoonAnimeExtractor.isMoonUrl(iframeUrl)) {
-                pId = "moon"; pName = "Moon"
-            } else if (FenixExtractor.isFenixUrl(iframeUrl)) {
-                pId = "fenix"; pName = "Fenix"
-            } else if (PeerTubeExtractor.isPeerTubeUrl(iframeUrl)) {
-                pId = "peertube"; pName = "PeerTube"
-            }
+            var (pId, pName) = ExtractorUtils.identifyPlayer(iframeUrl)
 
             if (playerTabLabel.isNotEmpty()) {
                 pName = playerTabLabel

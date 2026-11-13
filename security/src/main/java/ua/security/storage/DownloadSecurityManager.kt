@@ -17,7 +17,6 @@ class DownloadSecurityManager(context: Context) {
     private val context: Context = context.applicationContext
 
     companion object {
-        private const val TAG = "DownloadSecurityManager"
         private val ILLEGAL_FILENAME_CHARS = Pattern.compile("[\\\\/:*?\"<>|\\x00-\\x1F\\x7F]")
         private const val MAX_FILENAME_LENGTH = 120
         const val SUBDIRECTORY_NAME = "AniUA"

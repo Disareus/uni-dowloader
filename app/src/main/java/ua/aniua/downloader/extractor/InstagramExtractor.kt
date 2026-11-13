@@ -8,13 +8,9 @@ import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
-import java.net.URLDecoder
 import java.util.regex.Pattern
 
 object InstagramExtractor {
-
-    private const val DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     private const val IG_APP_ID = "936619743392459"
 
@@ -60,16 +56,14 @@ object InstagramExtractor {
 
             val req = Request.Builder()
                 .url(apiUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("X-IG-App-ID", IG_APP_ID)
                 .header("Accept", "*/*")
                 .header("Referer", "https://www.instagram.com/")
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return null
-
-            val json = JSONObject(resp.body?.string() ?: "")
+            val body = ExtractorUtils.executeForString(client, req) ?: return null
+            val json = JSONObject(body)
             val items = json.optJSONArray("items")
             val mediaObj = if (items != null && items.length() > 0) {
                 items.getJSONObject(0)
@@ -154,14 +148,11 @@ object InstagramExtractor {
 
             val req = Request.Builder()
                 .url(embedUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .build()
 
-            val resp = client.newCall(req).execute()
-            if (!resp.isSuccessful || resp.body == null) return null
-
-            val html = resp.body?.string() ?: return null
+            val html = ExtractorUtils.executeForString(client, req) ?: return null
             val doc = Jsoup.parse(html, embedUrl)
 
             // Пошук прямого тегу video в embed розмітці

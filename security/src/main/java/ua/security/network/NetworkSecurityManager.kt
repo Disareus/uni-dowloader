@@ -31,8 +31,6 @@ class NetworkSecurityManager private constructor(
     private val context: Context = context.applicationContext
     val hardenedHttpClient: OkHttpClient = buildSecureOkHttpClient(stateProvider)
 
-    val client: OkHttpClient get() = hardenedHttpClient
-
     companion object {
         private const val TAG = "NetworkSecurityManager"
         private const val API_HOST = "api.aniua.org"
@@ -63,11 +61,6 @@ class NetworkSecurityManager private constructor(
             return sInstance ?: synchronized(NetworkSecurityManager::class.java) {
                 sInstance ?: NetworkSecurityManager(context, stateProvider).also { sInstance = it }
             }
-        }
-
-        @JvmStatic
-        fun getInstance(): NetworkSecurityManager {
-            return sInstance ?: throw IllegalStateException("NetworkSecurityManager must be initialized via init() first")
         }
 
         @JvmStatic

@@ -1,7 +1,6 @@
 package ua.aniua.downloader.extractor
 
 import com.google.gson.JsonArray
-import com.google.gson.JsonElement
 import com.google.gson.JsonParser
 import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
@@ -66,19 +65,7 @@ object RalodePlayerParser {
 
                     val iframeUrl = extractUrlFromCode(epCode, baseOrigin) ?: continue
 
-                    var pId = "player"
-                    var pName = "Плеєр"
-                    if (iframeUrl.contains("ashdi")) {
-                        pId = "ashdi"; pName = "Ashdi"
-                    } else if (iframeUrl.contains("tortuga")) {
-                        pId = "tortuga"; pName = "Tortuga"
-                    } else if (MoonAnimeExtractor.isMoonUrl(iframeUrl)) {
-                        pId = "moon"; pName = "Moon"
-                    } else if (FenixExtractor.isFenixUrl(iframeUrl)) {
-                        pId = "fenix"; pName = "Fenix"
-                    } else if (PeerTubeExtractor.isPeerTubeUrl(iframeUrl)) {
-                        pId = "peertube"; pName = "PeerTube"
-                    }
+                    var (pId, pName) = ExtractorUtils.identifyPlayer(iframeUrl)
 
                     if (!playerHint.isNullOrEmpty()) {
                         pId = pId + "_" + playerHint.lowercase().replace(Regex("[^a-z0-9]+"), "_")

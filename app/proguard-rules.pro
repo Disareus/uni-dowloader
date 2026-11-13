@@ -74,8 +74,8 @@
 -keep class ua.security.storage.DownloadSecurityManager {
     public static ua.security.storage.DownloadSecurityManager getInstance(android.content.Context);
     public java.lang.String sanitizeFileName(java.lang.String);
-    public android.net.Uri createScopedVideoUri(java.lang.String, java.lang.String);
-    public java.io.File getGuardedStorageDir();
+    public android.net.Uri createScopedVideoUri(java.lang.String, java.lang.String, java.lang.String);
+    public java.io.File getGuardedStorageDir(java.lang.String);
     public void validateCanonicalDestination(java.io.File, java.io.File);
     public void publishPendingVideo(android.net.Uri);
 }

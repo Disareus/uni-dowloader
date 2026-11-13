@@ -10,21 +10,18 @@ import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
 import ua.aniua.downloader.model.StreamQuality
-import java.net.URLDecoder
 import java.util.regex.Pattern
 
 object YouTubeExtractor {
-
-    private const val DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     private const val ANDROID_CLIENT_VERSION = "19.09.37"
 
     // Регулярні вирази для розпізнавання YouTube URL
     private val YOUTUBE_URL_PATTERNS = listOf(
-        Pattern.compile("(?:https?://)?(?:www\\.|m\\.)?youtube\\.com/watch\\?.*v=([a-zA-Z0-9_-]{11})"),
+        Pattern.compile("(?:https?://)?(?:www\\.|m\\.|music\\.)?youtube\\.com/watch\\?.*v=([a-zA-Z0-9_-]{11})"),
         Pattern.compile("(?:https?://)?(?:www\\.)?youtu\\.be/([a-zA-Z0-9_-]{11})"),
         Pattern.compile("(?:https?://)?(?:www\\.|m\\.)?youtube\\.com/shorts/([a-zA-Z0-9_-]{11})"),
+        Pattern.compile("(?:https?://)?(?:www\\.|m\\.)?youtube\\.com/live/([a-zA-Z0-9_-]{11})"),
         Pattern.compile("(?:https?://)?(?:www\\.|m\\.)?youtube\\.com/embed/([a-zA-Z0-9_-]{11})"),
         Pattern.compile("(?:https?://)?(?:www\\.|m\\.)?youtube\\.com/v/([a-zA-Z0-9_-]{11})")
     )
@@ -90,10 +87,7 @@ object YouTubeExtractor {
                 .post(requestBody)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful || response.body == null) return null
-
-            val respString = response.body?.string() ?: return null
+            val respString = ExtractorUtils.executeForString(client, request) ?: return null
             val root = JSONObject(respString)
 
             val videoDetails = root.optJSONObject("videoDetails")
@@ -149,6 +143,7 @@ object YouTubeExtractor {
 
             if (qualities.isEmpty()) return null
 
+            qualities.sortByDescending { it.height }
             val availableLabels = qualities.map { it.label }.distinct().toMutableList()
             val finalTitle = if (author.isNotEmpty()) "$title ($author)" else title
 
@@ -194,13 +189,11 @@ object YouTubeExtractor {
             try {
                 val req = Request.Builder()
                     .url("$host/streams/$videoId")
-                    .header("User-Agent", DEFAULT_UA)
+                    .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                     .build()
 
-                val resp = client.newCall(req).execute()
-                if (!resp.isSuccessful || resp.body == null) continue
-
-                val json = JSONObject(resp.body?.string() ?: "")
+                val body = ExtractorUtils.executeForString(client, req) ?: continue
+                val json = JSONObject(body)
                 val title = json.optString("title", "YouTube Відео")
                 val uploader = json.optString("uploader", "")
                 val desc = if (json.has("description")) json.optString("description") else null
@@ -228,6 +221,7 @@ object YouTubeExtractor {
                 }
 
                 if (qualities.isNotEmpty()) {
+                    qualities.sortByDescending { it.height }
                     val availableLabels = qualities.map { it.label }.distinct().toMutableList()
                     val ep = EpisodeItem(
                         id = "yt_$videoId",

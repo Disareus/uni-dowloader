@@ -1,11 +1,18 @@
 package ua.aniua.downloader.ui
 
 import android.annotation.SuppressLint
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.graphics.Bitmap
 import android.os.Bundle
+import android.text.Editable
+import android.text.TextWatcher
+import android.view.LayoutInflater
 import android.view.View
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -13,407 +20,523 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
-import android.widget.ImageButton
-import android.widget.ImageView
-import android.widget.LinearLayout
-import android.widget.ProgressBar
-import android.widget.RelativeLayout
-import android.widget.Spinner
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.core.widget.NestedScrollView
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import androidx.recyclerview.widget.RecyclerView
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 import com.bumptech.glide.Glide
-import com.google.android.material.button.MaterialButton
-import com.google.android.material.card.MaterialCardView
 import com.google.android.material.chip.Chip
-import com.google.android.material.chip.ChipGroup
-import com.google.android.material.tabs.TabLayout
-import com.google.android.material.textfield.TextInputEditText
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import ua.aniua.downloader.R
+import ua.aniua.downloader.data.ShortcutRepository
+import ua.aniua.downloader.databinding.ActivityMainBinding
+import ua.aniua.downloader.databinding.DialogAddShortcutBinding
 import ua.aniua.downloader.extractor.ExtractorRouter
+import ua.aniua.downloader.extractor.ExtractorUtils
 import ua.aniua.downloader.extractor.GenericPlayerResolver
 import ua.aniua.downloader.model.DownloadTask
 import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
+import ua.aniua.downloader.model.SiteShortcut
+import ua.aniua.downloader.service.DownloadQueueManager
 import ua.aniua.downloader.service.DownloadService
 import ua.aniua.downloader.ui.adapter.EpisodeAdapter
+import ua.aniua.downloader.ui.adapter.ShortcutAdapter
 import ua.security.hardening.AppSecurityManager
 import ua.security.hardening.ThreatLevel
 import ua.security.network.NetworkSecurityManager
 import java.util.UUID
 import java.util.regex.Pattern
 
-class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener {
+class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener, ShortcutAdapter.OnShortcutClickListener {
 
-    private lateinit var tabLayout: TabLayout
-    private lateinit var layoutCatalog: RelativeLayout
-    private lateinit var scrollDownloader: NestedScrollView
-    private lateinit var swipeRefreshCatalog: SwipeRefreshLayout
-    private lateinit var progressWebLoader: ProgressBar
-    private lateinit var webView: WebView
-    private lateinit var btnWebBack: ImageButton
-    private lateinit var btnWebForward: ImageButton
-    private lateinit var btnWebHome: ImageButton
-    private lateinit var btnWebRefresh: ImageButton
-    private lateinit var btnWebDownloadCurrent: MaterialButton
-    private lateinit var btnBackToCatalog: MaterialButton
-
-    private lateinit var etUrl: TextInputEditText
-    private lateinit var btnAnalyze: MaterialButton
-    private lateinit var progressAnalyze: ProgressBar
-    private lateinit var cardSecurityBanner: MaterialCardView
-    private lateinit var tvSecurityBannerText: TextView
-
-    private lateinit var containerMediaDetail: LinearLayout
-    private lateinit var ivBackdrop: ImageView
-    private lateinit var ivPoster: ImageView
-    private lateinit var tvBadgeSite: TextView
-    private lateinit var tvBadgeEpCount: TextView
-    private lateinit var tvBadgeRating: TextView
-    private lateinit var tvTitle: TextView
-    private lateinit var tvOrigTitle: TextView
-    private lateinit var tvDesc: TextView
-    private lateinit var containerStudiosSection: View
-    private lateinit var chipGroupStudios: ChipGroup
-    private lateinit var containerPlayersBar: View
-    private lateinit var chipGroupPlayers: ChipGroup
-    private lateinit var containerSingleVideoActions: View
-    private lateinit var btnSinglePreview: MaterialButton
-    private lateinit var btnSingleDownload: MaterialButton
-    private lateinit var containerEpisodesSection: View
-    private lateinit var tvEpisodesHeader: TextView
-    private lateinit var btnSelectAll: MaterialButton
-    private lateinit var rvEpisodes: RecyclerView
-
-    private lateinit var cardBottomDownloadBar: MaterialCardView
-    private lateinit var tvSelectedCount: TextView
-    private lateinit var spinnerQuality: Spinner
-    private lateinit var spinnerFormat: Spinner
-    private lateinit var btnDownloadSelected: MaterialButton
-
+    private lateinit var binding: ActivityMainBinding
     private lateinit var episodeAdapter: EpisodeAdapter
+    private lateinit var shortcutAdapter: ShortcutAdapter
+    private lateinit var shortcutRepository: ShortcutRepository
+    private lateinit var httpClient: OkHttpClient
+    private lateinit var queueManager: DownloadQueueManager
+
     private var currentMediaInfo: MediaInfo? = null
     private var currentStudio: DubStudio? = null
     private var currentPlayer: PlayerSource? = null
-    private lateinit var httpClient: OkHttpClient
     private var allSelected = false
+    private var isDescExpanded = false
 
-    private val anitubeAnimePattern = Pattern.compile("https?://(?:www\\.)?anitube\\.in\\.ua/(\\d+)-.*\\.html", Pattern.CASE_INSENSITIVE)
+    private val urlInTextPattern = Pattern.compile("https?://\\S+")
+
+    private val downloadBadgeListener: (DownloadTask) -> Unit = {
+        if (!isFinishing && !isDestroyed) {
+            updateActiveDownloadsBadge()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
+        binding = ActivityMainBinding.inflate(layoutInflater)
+        setContentView(binding.root)
 
         httpClient = NetworkSecurityManager.getInstance(this).hardenedHttpClient
+        queueManager = DownloadQueueManager.getInstance(this)
+        shortcutRepository = ShortcutRepository(this)
 
         initViews()
+        initShortcuts()
         initWebView()
-        performSecurityAudit()
         setupListeners()
+        setupBackNavigation()
+        performSecurityAuditAsync()
+        handleIncomingIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingIntent(intent)
+    }
+
+    private fun handleIncomingIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return
+        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim() ?: return
+        val matcher = urlInTextPattern.matcher(sharedText)
+        val extractedUrl = if (matcher.find()) matcher.group() else sharedText
+        if (extractedUrl.isNotEmpty()) {
+            openDownloadMenu(extractedUrl)
+        }
     }
 
     private fun initViews() {
-        tabLayout = findViewById(R.id.tab_layout)
-        layoutCatalog = findViewById(R.id.layout_catalog)
-        scrollDownloader = findViewById(R.id.scroll_downloader)
-        swipeRefreshCatalog = findViewById(R.id.swipe_refresh_catalog)
-        progressWebLoader = findViewById(R.id.progress_web_loader)
-        webView = findViewById(R.id.webview_anitube)
-        btnWebBack = findViewById(R.id.btn_web_back)
-        btnWebForward = findViewById(R.id.btn_web_forward)
-        btnWebHome = findViewById(R.id.btn_web_home)
-        btnWebRefresh = findViewById(R.id.btn_web_refresh)
-        btnWebDownloadCurrent = findViewById(R.id.btn_web_download_current)
-        btnBackToCatalog = findViewById(R.id.btn_back_to_catalog)
-
-        etUrl = findViewById(R.id.et_url)
-        btnAnalyze = findViewById(R.id.btn_analyze)
-        progressAnalyze = findViewById(R.id.progress_analyze)
-        cardSecurityBanner = findViewById(R.id.card_security_banner)
-        tvSecurityBannerText = findViewById(R.id.tv_security_banner_text)
-
-        containerMediaDetail = findViewById(R.id.container_media_detail)
-        ivBackdrop = findViewById(R.id.iv_backdrop)
-        ivPoster = findViewById(R.id.iv_poster)
-        tvBadgeSite = findViewById(R.id.tv_badge_site)
-        tvBadgeEpCount = findViewById(R.id.tv_badge_ep_count)
-        tvBadgeRating = findViewById(R.id.tv_badge_rating)
-        tvTitle = findViewById(R.id.tv_media_title)
-        tvOrigTitle = findViewById(R.id.tv_media_orig_title)
-        tvDesc = findViewById(R.id.tv_media_desc)
-
-        containerStudiosSection = findViewById(R.id.container_studios_section)
-        chipGroupStudios = findViewById(R.id.chip_group_studios)
-        containerPlayersBar = findViewById(R.id.container_players_bar)
-        chipGroupPlayers = findViewById(R.id.chip_group_players)
-        containerSingleVideoActions = findViewById(R.id.container_single_video_actions)
-        btnSinglePreview = findViewById(R.id.btn_single_preview)
-        btnSingleDownload = findViewById(R.id.btn_single_download)
-        containerEpisodesSection = findViewById(R.id.container_episodes_section)
-        tvEpisodesHeader = findViewById(R.id.tv_episodes_header)
-        btnSelectAll = findViewById(R.id.btn_select_all)
-        rvEpisodes = findViewById(R.id.rv_episodes)
-
-        cardBottomDownloadBar = findViewById(R.id.card_bottom_download_bar)
-        tvSelectedCount = findViewById(R.id.tv_selected_count)
-        spinnerQuality = findViewById(R.id.spinner_quality)
-        spinnerFormat = findViewById(R.id.spinner_format)
-        btnDownloadSelected = findViewById(R.id.btn_download_selected)
-
-        findViewById<View>(R.id.btn_downloads_header).setOnClickListener {
+        binding.btnDownloadsHeader.setOnClickListener {
             startActivity(Intent(this, DownloadsActivity::class.java))
         }
 
-        rvEpisodes.layoutManager = LinearLayoutManager(this)
+        binding.rvEpisodes.layoutManager = LinearLayoutManager(this)
         episodeAdapter = EpisodeAdapter(this)
-        rvEpisodes.adapter = episodeAdapter
+        binding.rvEpisodes.adapter = episodeAdapter
 
-        val formatAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, arrayOf("mp4", "mkv"))
-        spinnerFormat.adapter = formatAdapter
+        binding.spinnerFormat.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            arrayOf("mp4", "mkv")
+        )
+        binding.spinnerQuality.adapter = ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_dropdown_item,
+            arrayOf("1080p", "720p", "480p", "360p")
+        )
 
-        val qualityAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, arrayOf("1080p", "720p", "480p", "360p"))
-        spinnerQuality.adapter = qualityAdapter
+        updateActiveDownloadsBadge()
+        queueManager.addListener(downloadBadgeListener)
+    }
+
+    private fun initShortcuts() {
+        binding.rvShortcuts.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+        shortcutAdapter = ShortcutAdapter(this)
+        binding.rvShortcuts.adapter = shortcutAdapter
+        refreshShortcuts()
+    }
+
+    private fun refreshShortcuts() {
+        val list = shortcutRepository.getShortcuts()
+        shortcutAdapter.setShortcuts(list)
+        binding.tvShortcutsHint.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+    }
+
+    override fun onAddShortcutClick() {
+        showShortcutDialog(null)
+    }
+
+    override fun onShortcutClick(shortcut: SiteShortcut) {
+        openShortcutInBrowser(shortcut)
+    }
+
+    override fun onShortcutLongClick(shortcut: SiteShortcut) {
+        val options = arrayOf("Перейти на сайт", "Редагувати", "Видалити ярлик")
+        MaterialAlertDialogBuilder(this)
+            .setTitle(shortcut.name)
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> openShortcutInBrowser(shortcut)
+                    1 -> showShortcutDialog(shortcut)
+                    2 -> {
+                        shortcutRepository.removeShortcut(shortcut.id)
+                        refreshShortcuts()
+                    }
+                }
+            }
+            .show()
+    }
+
+    private fun showShortcutDialog(existing: SiteShortcut?) {
+        val dialogBinding = DialogAddShortcutBinding.inflate(LayoutInflater.from(this))
+        if (existing != null) {
+            dialogBinding.etShortcutUrl.setText(existing.url)
+            dialogBinding.etShortcutName.setText(existing.name)
+        }
+
+        dialogBinding.tilShortcutUrl.setEndIconOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
+            if (clipText.isNullOrEmpty()) {
+                Toast.makeText(this, getString(R.string.clipboard_empty), Toast.LENGTH_SHORT).show()
+            } else {
+                dialogBinding.etShortcutUrl.setText(clipText)
+                dialogBinding.tilShortcutUrl.error = null
+            }
+        }
+
+        val titleRes = if (existing == null) R.string.shortcut_dialog_title_add else R.string.shortcut_dialog_title_edit
+        val dialog = MaterialAlertDialogBuilder(this)
+            .setTitle(titleRes)
+            .setView(dialogBinding.root)
+            .setNegativeButton(R.string.shortcut_cancel, null)
+            .setPositiveButton(R.string.shortcut_save, null)
+            .create()
+
+        dialog.setOnShowListener {
+            dialog.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val rawUrl = dialogBinding.etShortcutUrl.text?.toString()?.trim() ?: ""
+                val customName = dialogBinding.etShortcutName.text?.toString()?.trim()
+                val saved = if (existing == null) {
+                    shortcutRepository.addShortcut(rawUrl, customName)
+                } else {
+                    shortcutRepository.updateShortcut(existing.id, rawUrl, customName)
+                }
+                if (saved == null) {
+                    dialogBinding.tilShortcutUrl.error = getString(R.string.shortcut_error_invalid_url)
+                } else {
+                    refreshShortcuts()
+                    dialog.dismiss()
+                }
+            }
+        }
+
+        dialog.show()
+    }
+
+    private fun openShortcutInBrowser(shortcut: SiteShortcut) {
+        binding.scrollDownloader.visibility = View.GONE
+        binding.cardBottomDownloadBar.visibility = View.GONE
+        binding.layoutBrowser.visibility = View.VISIBLE
+        binding.toolbar.title = shortcut.name
+        binding.webviewShortcut.loadUrl(shortcut.url)
+    }
+
+    private fun closeBrowser() {
+        binding.layoutBrowser.visibility = View.GONE
+        binding.scrollDownloader.visibility = View.VISIBLE
+        binding.toolbar.title = getString(R.string.app_name)
+        binding.progressWebLoader.visibility = View.GONE
+        binding.swipeRefreshCatalog.isRefreshing = false
+        updateBottomBarVisibility()
     }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun initWebView() {
         CookieManager.getInstance().setAcceptCookie(true)
-        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
+        CookieManager.getInstance().setAcceptThirdPartyCookies(binding.webviewShortcut, true)
 
+        val webView = binding.webviewShortcut
         webView.setBackgroundColor(ContextCompat.getColor(this, R.color.aniyomi_bg))
-        val settings = webView.settings
-        settings.javaScriptEnabled = true
-        settings.domStorageEnabled = true
-        settings.databaseEnabled = true
-        settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
-        settings.cacheMode = WebSettings.LOAD_DEFAULT
-        settings.userAgentString =
-            "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            cacheMode = WebSettings.LOAD_DEFAULT
+            userAgentString =
+                "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+        }
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 if (newProgress < 100) {
-                    progressWebLoader.visibility = View.VISIBLE
-                    progressWebLoader.progress = newProgress
+                    binding.progressWebLoader.visibility = View.VISIBLE
+                    binding.progressWebLoader.progress = newProgress
                 } else {
-                    progressWebLoader.visibility = View.GONE
+                    binding.progressWebLoader.visibility = View.GONE
                 }
             }
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                val url = request?.url?.toString() ?: return false
-                if (isAnitubeAnimePage(url)) {
-                    openAnimeDownloadMenu(url)
-                    return true
-                }
-                return false
-            }
-
-            @Deprecated("Deprecated in Java")
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                if (url != null && isAnitubeAnimePage(url)) {
-                    openAnimeDownloadMenu(url)
-                    return true
-                }
                 return false
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                swipeRefreshCatalog.isRefreshing = true
-                progressWebLoader.visibility = View.VISIBLE
+                binding.swipeRefreshCatalog.isRefreshing = true
+                binding.progressWebLoader.visibility = View.VISIBLE
+                updateWebNavButtons()
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
-                swipeRefreshCatalog.isRefreshing = false
-                progressWebLoader.visibility = View.GONE
+                binding.swipeRefreshCatalog.isRefreshing = false
+                binding.progressWebLoader.visibility = View.GONE
+                updateWebNavButtons()
 
-                val isAnime = url != null && isAnitubeAnimePage(url)
-                btnWebDownloadCurrent.visibility = if (isAnime) View.VISIBLE else View.GONE
+                val isDownloadable = url != null &&
+                    (url.startsWith("http://") || url.startsWith("https://"))
+                binding.btnWebDownloadCurrent.visibility = if (isDownloadable) View.VISIBLE else View.GONE
             }
         }
 
-        swipeRefreshCatalog.setColorSchemeColors(ContextCompat.getColor(this, R.color.accent_cyan))
-        swipeRefreshCatalog.setProgressBackgroundColorSchemeColor(ContextCompat.getColor(this, R.color.aniyomi_surface_elevated))
-        swipeRefreshCatalog.setOnRefreshListener {
-            webView.reload()
+        binding.swipeRefreshCatalog.apply {
+            setColorSchemeColors(ContextCompat.getColor(this@MainActivity, R.color.primary))
+            setProgressBackgroundColorSchemeColor(ContextCompat.getColor(this@MainActivity, R.color.aniyomi_surface))
+            setOnChildScrollUpCallback { _, _ -> webView.scrollY > 0 }
+            setOnRefreshListener { webView.reload() }
         }
 
-        btnWebBack.setOnClickListener {
+        binding.btnWebClose.setOnClickListener {
+            closeBrowser()
+        }
+        binding.btnWebBack.setOnClickListener {
             if (webView.canGoBack()) webView.goBack()
         }
-        btnWebForward.setOnClickListener {
+        binding.btnWebForward.setOnClickListener {
             if (webView.canGoForward()) webView.goForward()
         }
-        btnWebHome.setOnClickListener {
-            webView.loadUrl("https://anitube.in.ua/")
-        }
-        btnWebRefresh.setOnClickListener {
+        binding.btnWebRefresh.setOnClickListener {
             webView.reload()
         }
-        btnWebDownloadCurrent.setOnClickListener {
+        binding.btnWebDownloadCurrent.setOnClickListener {
             val currentUrl = webView.url
-            if (currentUrl != null && isAnitubeAnimePage(currentUrl)) {
-                openAnimeDownloadMenu(currentUrl)
+            if (currentUrl != null && (currentUrl.startsWith("http://") || currentUrl.startsWith("https://"))) {
+                openDownloadMenu(currentUrl)
             }
         }
 
-        webView.loadUrl("https://anitube.in.ua/")
+        updateWebNavButtons()
     }
 
-    private fun isAnitubeAnimePage(url: String): Boolean {
-        return anitubeAnimePattern.matcher(url.trim()).find()
+    private fun updateWebNavButtons() {
+        val canBack = binding.webviewShortcut.canGoBack()
+        val canForward = binding.webviewShortcut.canGoForward()
+        binding.btnWebBack.isEnabled = canBack
+        binding.btnWebBack.alpha = if (canBack) 1.0f else 0.35f
+        binding.btnWebForward.isEnabled = canForward
+        binding.btnWebForward.alpha = if (canForward) 1.0f else 0.35f
     }
 
-    private fun openAnimeDownloadMenu(url: String) {
-        tabLayout.getTabAt(1)?.select()
-        etUrl.setText(url)
+    private fun openDownloadMenu(url: String) {
+        closeBrowser()
+        binding.etUrl.setText(url)
         startAnalyze(url)
     }
 
-    private fun performSecurityAudit() {
-        val secMgr = AppSecurityManager.getInstance(this)
-        val audit = secMgr.performAudit()
-        val isDebug = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-
-        if (audit.overallThreatLevel == ThreatLevel.ENVIRONMENT_RISK) {
-            cardSecurityBanner.visibility = View.VISIBLE
-            tvSecurityBannerText.text = getString(R.string.security_warning_msg)
-        } else if (audit.overallThreatLevel == ThreatLevel.CRITICAL_ATTACK) {
-            if (isDebug) {
-                cardSecurityBanner.visibility = View.VISIBLE
-                tvSecurityBannerText.text = "Режим розробника (Debug): перевірки безпеки адаптовано"
-                return
+    private fun performSecurityAuditAsync() {
+        lifecycleScope.launch {
+            val audit = withContext(Dispatchers.Default) {
+                AppSecurityManager.getInstance(this@MainActivity).performAudit()
             }
-            Toast.makeText(this, getString(R.string.security_critical_msg), Toast.LENGTH_LONG).show()
-            finish()
+            if (isFinishing || isDestroyed) return@launch
+
+            val isDebug = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+            if (audit.overallThreatLevel == ThreatLevel.ENVIRONMENT_RISK) {
+                binding.cardSecurityBanner.visibility = View.VISIBLE
+                binding.tvSecurityBannerText.text = getString(R.string.security_warning_msg)
+            } else if (audit.overallThreatLevel == ThreatLevel.CRITICAL_ATTACK) {
+                if (isDebug) {
+                    binding.cardSecurityBanner.visibility = View.VISIBLE
+                    binding.tvSecurityBannerText.text = "Режим розробника (Debug): перевірки безпеки адаптовано"
+                    return@launch
+                }
+                Toast.makeText(this@MainActivity, getString(R.string.security_critical_msg), Toast.LENGTH_LONG).show()
+                finish()
+            }
         }
     }
 
     private fun setupListeners() {
-        tabLayout.addOnTabSelectedListener(object : TabLayout.OnTabSelectedListener {
-            override fun onTabSelected(tab: TabLayout.Tab?) {
-                when (tab?.position) {
-                    0 -> {
-                        layoutCatalog.visibility = View.VISIBLE
-                        scrollDownloader.visibility = View.GONE
-                        cardBottomDownloadBar.visibility = View.GONE
-                    }
-                    1 -> {
-                        layoutCatalog.visibility = View.GONE
-                        scrollDownloader.visibility = View.VISIBLE
-                        updateBottomBarVisibility()
-                    }
-                }
+        binding.etUrl.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                binding.btnClearUrl.visibility = if (s.isNullOrEmpty()) View.GONE else View.VISIBLE
             }
-
-            override fun onTabUnselected(tab: TabLayout.Tab?) {}
-            override fun onTabReselected(tab: TabLayout.Tab?) {}
+            override fun afterTextChanged(s: Editable?) {}
         })
 
-        btnBackToCatalog.setOnClickListener {
-            tabLayout.getTabAt(0)?.select()
-        }
-
-        btnAnalyze.setOnClickListener {
-            val url = etUrl.text?.toString()?.trim() ?: ""
-            if (url.isEmpty()) {
-                etUrl.error = getString(R.string.error_empty_url)
-                return@setOnClickListener
+        binding.etUrl.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_SEARCH || actionId == EditorInfo.IME_ACTION_GO) {
+                triggerAnalyzeFromInput()
+                true
+            } else {
+                false
             }
-            startAnalyze(url)
         }
 
-        btnSelectAll.setOnClickListener {
+        binding.btnClearUrl.setOnClickListener {
+            binding.etUrl.setText("")
+            binding.etUrl.error = null
+        }
+
+        binding.btnPasteUrl.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
+            if (clipText.isNullOrEmpty()) {
+                Toast.makeText(this, getString(R.string.clipboard_empty), Toast.LENGTH_SHORT).show()
+            } else {
+                binding.etUrl.setText(clipText)
+                startAnalyze(clipText)
+            }
+        }
+
+        binding.btnAnalyze.setOnClickListener {
+            triggerAnalyzeFromInput()
+        }
+
+        binding.containerDescription.setOnClickListener {
+            isDescExpanded = !isDescExpanded
+            binding.tvMediaDesc.maxLines = if (isDescExpanded) Int.MAX_VALUE else 3
+            binding.tvDescToggle.text = getString(
+                if (isDescExpanded) R.string.desc_collapse else R.string.desc_expand_more
+            )
+        }
+
+        binding.btnSelectAll.setOnClickListener {
             allSelected = !allSelected
             episodeAdapter.selectAll(allSelected)
-            btnSelectAll.text = if (allSelected) "Зняти вибір" else "Вибрати всі"
+            binding.btnSelectAll.text = getString(
+                if (allSelected) R.string.btn_deselect_all else R.string.btn_select_all
+            )
         }
 
-        btnDownloadSelected.setOnClickListener {
+        binding.btnDownloadSelected.setOnClickListener {
             enqueueSelectedDownloads()
         }
     }
 
+    private fun setupBackNavigation() {
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                when {
+                    binding.layoutBrowser.visibility == View.VISIBLE && binding.webviewShortcut.canGoBack() -> {
+                        binding.webviewShortcut.goBack()
+                    }
+                    binding.layoutBrowser.visibility == View.VISIBLE -> {
+                        closeBrowser()
+                    }
+                    else -> {
+                        isEnabled = false
+                        onBackPressedDispatcher.onBackPressed()
+                    }
+                }
+            }
+        })
+    }
+
+    private fun triggerAnalyzeFromInput() {
+        val url = binding.etUrl.text?.toString()?.trim() ?: ""
+        if (url.isEmpty()) {
+            binding.etUrl.error = getString(R.string.error_empty_url)
+            return
+        }
+        hideKeyboard()
+        startAnalyze(url)
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.hideSoftInputFromWindow(binding.etUrl.windowToken, 0)
+    }
+
     private fun startAnalyze(url: String) {
-        btnAnalyze.isEnabled = false
-        progressAnalyze.visibility = View.VISIBLE
+        binding.btnAnalyze.isEnabled = false
+        binding.progressAnalyze.visibility = View.VISIBLE
 
         lifecycleScope.launch {
             try {
                 val info = withContext(Dispatchers.IO) {
                     ExtractorRouter.analyzeUrl(httpClient, url)
                 }
-                btnAnalyze.isEnabled = true
-                progressAnalyze.visibility = View.GONE
+                binding.btnAnalyze.isEnabled = true
+                binding.progressAnalyze.visibility = View.GONE
                 displayMediaInfo(info)
             } catch (e: Exception) {
-                btnAnalyze.isEnabled = true
-                progressAnalyze.visibility = View.GONE
-                Toast.makeText(this@MainActivity, getString(R.string.error_analysis_failed, e.message), Toast.LENGTH_LONG).show()
+                binding.btnAnalyze.isEnabled = true
+                binding.progressAnalyze.visibility = View.GONE
+                Toast.makeText(
+                    this@MainActivity,
+                    getString(R.string.error_analysis_failed, e.message ?: "невідома помилка"),
+                    Toast.LENGTH_LONG
+                ).show()
             }
         }
     }
 
     private fun displayMediaInfo(info: MediaInfo) {
         currentMediaInfo = info
-        containerMediaDetail.visibility = View.VISIBLE
+        binding.containerEmptyState.visibility = View.GONE
+        binding.containerMediaDetail.visibility = View.VISIBLE
 
-        tvTitle.text = info.title
-        tvOrigTitle.text = info.originalTitle ?: ""
-        tvOrigTitle.visibility = if (info.originalTitle != null) View.VISIBLE else View.GONE
-        tvBadgeSite.text = info.siteType.uppercase()
-        tvDesc.text = info.description ?: "Немає опису"
+        binding.tvMediaTitle.text = info.title
+        binding.tvMediaOrigTitle.text = info.originalTitle ?: ""
+        binding.tvMediaOrigTitle.visibility = if (info.originalTitle.isNullOrEmpty()) View.GONE else View.VISIBLE
+        binding.tvBadgeSite.text = info.siteType.uppercase()
 
-        // Рейтинг аніме
+        val descText = info.description?.takeIf { it.isNotBlank() } ?: "Немає опису"
+        isDescExpanded = false
+        binding.tvMediaDesc.maxLines = 3
+        binding.tvMediaDesc.text = descText
+        binding.tvMediaDesc.post {
+            val isEllipsized = (binding.tvMediaDesc.layout?.lineCount ?: 0) > 3 || descText.length > 140
+            binding.tvDescToggle.visibility = if (isEllipsized) View.VISIBLE else View.GONE
+            binding.tvDescToggle.text = getString(R.string.desc_expand_more)
+        }
+
         if (!info.rating.isNullOrEmpty()) {
-            tvBadgeRating.visibility = View.VISIBLE
-            tvBadgeRating.text = info.rating
+            binding.tvBadgeRating.visibility = View.VISIBLE
+            binding.tvBadgeRating.text = info.rating
         } else {
-            tvBadgeRating.visibility = View.GONE
+            binding.tvBadgeRating.visibility = View.GONE
         }
 
         if (!info.posterUrl.isNullOrEmpty()) {
-            Glide.with(this).load(info.posterUrl).into(ivPoster)
-            Glide.with(this).load(info.posterUrl).into(ivBackdrop)
+            Glide.with(this)
+                .load(info.posterUrl)
+                .placeholder(R.drawable.ic_movie_placeholder)
+                .error(R.drawable.ic_movie_placeholder)
+                .into(binding.ivPoster)
+            Glide.with(this)
+                .load(info.posterUrl)
+                .into(binding.ivBackdrop)
+        } else {
+            Glide.with(this).clear(binding.ivPoster)
+            Glide.with(this).clear(binding.ivBackdrop)
+            binding.ivPoster.setImageResource(R.drawable.ic_movie_placeholder)
+            binding.ivBackdrop.setImageDrawable(null)
         }
 
         if (info.availableQualities.isNotEmpty()) {
-            val qAdapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, info.availableQualities)
-            spinnerQuality.adapter = qAdapter
+            binding.spinnerQuality.adapter = ArrayAdapter(
+                this,
+                android.R.layout.simple_spinner_dropdown_item,
+                info.availableQualities
+            )
         }
 
-        val isSeries = info.isSeries
-        containerStudiosSection.visibility = if (isSeries && info.studios.size > 1) View.VISIBLE else View.GONE
-        containerEpisodesSection.visibility = if (isSeries) View.VISIBLE else View.GONE
-        containerSingleVideoActions.visibility = if (isSeries) View.GONE else View.VISIBLE
-
-        chipGroupStudios.removeAllViews()
         val studios = info.studios
+        binding.containerStudiosSection.visibility = if (studios.size > 1) View.VISIBLE else View.GONE
 
+        binding.chipGroupStudios.removeAllViews()
         if (studios.isNotEmpty()) {
             for (i in studios.indices) {
                 val studio = studios[i]
-                val chip = layoutInflater.inflate(R.layout.item_chip_studio, chipGroupStudios, false) as Chip
+                val chip = layoutInflater.inflate(R.layout.item_chip_studio, binding.chipGroupStudios, false) as Chip
                 chip.text = studio.name
                 chip.id = View.generateViewId()
-
                 chip.setOnClickListener { selectStudio(studio) }
-                chipGroupStudios.addView(chip)
+                binding.chipGroupStudios.addView(chip)
                 if (i == 0) {
                     chip.isChecked = true
                     selectStudio(studio)
@@ -435,26 +558,24 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         currentStudio = studio
         val players = studio.players
 
-        val isSeries = currentMediaInfo?.isSeries == true
         if (players.isNotEmpty()) {
-            if (players.size > 1 && isSeries) {
-                containerPlayersBar.visibility = View.VISIBLE
-                chipGroupPlayers.removeAllViews()
+            if (players.size > 1) {
+                binding.containerPlayersBar.visibility = View.VISIBLE
+                binding.chipGroupPlayers.removeAllViews()
                 for (i in players.indices) {
                     val player = players[i]
-                    val pChip = layoutInflater.inflate(R.layout.item_chip_studio, chipGroupPlayers, false) as Chip
+                    val pChip = layoutInflater.inflate(R.layout.item_chip_studio, binding.chipGroupPlayers, false) as Chip
                     pChip.text = player.name
                     pChip.id = View.generateViewId()
-
                     pChip.setOnClickListener { selectPlayer(player) }
-                    chipGroupPlayers.addView(pChip)
+                    binding.chipGroupPlayers.addView(pChip)
                     if (i == 0) {
                         pChip.isChecked = true
                         selectPlayer(player)
                     }
                 }
             } else {
-                containerPlayersBar.visibility = View.GONE
+                binding.containerPlayersBar.visibility = View.GONE
                 selectPlayer(players[0])
             }
         }
@@ -463,24 +584,22 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     private fun selectPlayer(player: PlayerSource) {
         currentPlayer = player
         val episodes = player.episodes
-        val isSeries = currentMediaInfo?.isSeries ?: (episodes.size > 1)
+        val isSeries = (currentMediaInfo?.isSeries == true) || episodes.size > 1
 
         if (isSeries) {
-            containerEpisodesSection.visibility = View.VISIBLE
-            containerSingleVideoActions.visibility = View.GONE
-            tvBadgeEpCount.text = "${episodes.size} серій"
-            tvEpisodesHeader.text = "СПИСОК СЕРІЙ (${episodes.size})"
+            binding.containerEpisodesSection.visibility = View.VISIBLE
+            binding.containerSingleVideoActions.visibility = View.GONE
+            binding.tvBadgeEpCount.text = "${episodes.size} серій"
+            binding.tvEpisodesHeader.text = "СПИСОК СЕРІЙ (${episodes.size})"
             episodeAdapter.setEpisodes(episodes)
 
             allSelected = false
-            btnSelectAll.text = "Вибрати всі"
-            cardBottomDownloadBar.visibility = View.GONE
+            binding.btnSelectAll.text = getString(R.string.btn_select_all)
+            updateBottomBarVisibility()
         } else {
-            containerEpisodesSection.visibility = View.GONE
-            containerSingleVideoActions.visibility = View.VISIBLE
-            containerStudiosSection.visibility = View.GONE
-            containerPlayersBar.visibility = View.GONE
-            tvBadgeEpCount.text = "Відео"
+            binding.containerEpisodesSection.visibility = View.GONE
+            binding.containerSingleVideoActions.visibility = View.VISIBLE
+            binding.tvBadgeEpCount.text = "Відео"
 
             val singleEp = episodes.firstOrNull() ?: EpisodeItem(
                 id = "single_ep",
@@ -490,15 +609,11 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
                 iframeUrl = currentMediaInfo?.url ?: ""
             )
 
-            btnSinglePreview.setOnClickListener {
-                onPlayPreview(singleEp)
-            }
-            btnSingleDownload.setOnClickListener {
-                onSingleDownload(singleEp)
-            }
+            binding.btnSinglePreview.setOnClickListener { onPlayPreview(singleEp) }
+            binding.btnSingleDownload.setOnClickListener { onSingleDownload(singleEp) }
 
-            tvSelectedCount.text = "Відео готове"
-            cardBottomDownloadBar.visibility = if (tabLayout.selectedTabPosition == 1) View.VISIBLE else View.GONE
+            binding.tvSelectedCount.text = "Відео готове"
+            updateBottomBarVisibility()
         }
     }
 
@@ -517,57 +632,48 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     override fun onSelectionChanged(selectedCount: Int) {
-        tvSelectedCount.text = "Вибрано: $selectedCount серій"
+        binding.tvSelectedCount.text = "Вибрано: $selectedCount серій"
         updateBottomBarVisibility()
     }
 
+    private fun isCurrentMediaSingle(): Boolean {
+        val episodesCount = currentPlayer?.episodes?.size
+            ?: currentMediaInfo?.studios?.firstOrNull()?.players?.firstOrNull()?.episodes?.size
+            ?: 0
+        return currentMediaInfo?.isSeries == false && episodesCount <= 1
+    }
+
     private fun updateBottomBarVisibility() {
-        val isSingle = currentMediaInfo?.isSeries == false
+        val isSingle = isCurrentMediaSingle()
         val hasSelection = isSingle || episodeAdapter.getSelectedEpisodes().isNotEmpty()
-        cardBottomDownloadBar.visibility = if (hasSelection && tabLayout.selectedTabPosition == 1) View.VISIBLE else View.GONE
+        binding.cardBottomDownloadBar.visibility =
+            if (hasSelection && binding.layoutBrowser.visibility != View.VISIBLE) View.VISIBLE else View.GONE
+    }
+
+    private fun updateActiveDownloadsBadge() {
+        val active = queueManager.getActiveCount()
+        if (active > 0) {
+            binding.tvActiveDownloadsBadge.visibility = View.VISIBLE
+            binding.tvActiveDownloadsBadge.text = if (active > 9) "9+" else active.toString()
+        } else {
+            binding.tvActiveDownloadsBadge.visibility = View.GONE
+        }
     }
 
     override fun onSingleDownload(episode: EpisodeItem) {
-        val quality = spinnerQuality.selectedItem?.toString() ?: "1080p"
-        val format = spinnerFormat.selectedItem?.toString() ?: "mp4"
+        val quality = binding.spinnerQuality.selectedItem?.toString() ?: "1080p"
+        val format = binding.spinnerFormat.selectedItem?.toString() ?: "mp4"
         val studioName = currentStudio?.name ?: "Оригінал"
         val mediaTitle = currentMediaInfo?.title ?: "Відео"
-
-        val isSingle = currentMediaInfo?.isSeries == false
-        val animeFolder = if (isSingle) {
-            "Downloads"
-        } else if (studioName.isNotEmpty() && studioName != "Оригінал") {
-            "$mediaTitle [$studioName]"
-        } else {
-            mediaTitle
-        }
+        val isSingle = isCurrentMediaSingle()
+        val animeFolder = resolveFolderName(isSingle, mediaTitle, studioName)
 
         lifecycleScope.launch {
             try {
-                val streams = withContext(Dispatchers.IO) {
-                    GenericPlayerResolver.resolvePlayerStreams(httpClient, episode.iframeUrl, episode.iframeUrl)
+                val task = withContext(Dispatchers.IO) {
+                    buildDownloadTask(episode, mediaTitle, studioName, isSingle, quality, format, animeFolder)
                 }
-                val streamUrl = if (streams.isNotEmpty()) streams[0].url else episode.iframeUrl
-
-                val task = DownloadTask(
-                    id = UUID.randomUUID().toString(),
-                    mediaTitle = mediaTitle,
-                    studioName = studioName,
-                    episodeNumber = if (isSingle) "1" else episode.number,
-                    episodeTitle = episode.title,
-                    iframeUrl = episode.iframeUrl,
-                    streamUrl = streamUrl,
-                    referer = episode.iframeUrl,
-                    quality = quality,
-                    format = format,
-                    folderName = animeFolder
-                )
-
-                val svcIntent = Intent(this@MainActivity, DownloadService::class.java).apply {
-                    action = DownloadService.ACTION_START_DOWNLOAD
-                    putExtra(DownloadService.EXTRA_TASK, task)
-                }
-                ContextCompat.startForegroundService(this@MainActivity, svcIntent)
+                startDownloadService(task)
 
                 val msg = if (isSingle) "Додано до черги: $mediaTitle" else "Додано до черги: Серія ${episode.number}"
                 Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
@@ -578,11 +684,12 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun enqueueSelectedDownloads() {
-        if (currentMediaInfo?.isSeries == false) {
-            val singleEp = currentPlayer?.episodes?.firstOrNull() ?: currentMediaInfo?.studios?.firstOrNull()?.players?.firstOrNull()?.episodes?.firstOrNull()
+        if (isCurrentMediaSingle()) {
+            val singleEp = currentPlayer?.episodes?.firstOrNull()
+                ?: currentMediaInfo?.studios?.firstOrNull()?.players?.firstOrNull()?.episodes?.firstOrNull()
             if (singleEp != null) {
                 onSingleDownload(singleEp)
-                startActivity(Intent(this@MainActivity, DownloadsActivity::class.java))
+                startActivity(Intent(this, DownloadsActivity::class.java))
                 return
             }
         }
@@ -593,70 +700,88 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
             return
         }
 
-        val quality = spinnerQuality.selectedItem?.toString() ?: "1080p"
-        val format = spinnerFormat.selectedItem?.toString() ?: "mp4"
+        val quality = binding.spinnerQuality.selectedItem?.toString() ?: "1080p"
+        val format = binding.spinnerFormat.selectedItem?.toString() ?: "mp4"
         val studioName = currentStudio?.name ?: "Оригінал"
         val mediaTitle = currentMediaInfo?.title ?: "Відео"
-
-        val animeFolder = if (studioName.isNotEmpty() && studioName != "Оригінал") "$mediaTitle [$studioName]" else mediaTitle
+        val animeFolder = resolveFolderName(false, mediaTitle, studioName)
 
         lifecycleScope.launch {
+            var enqueuedCount = 0
             withContext(Dispatchers.IO) {
                 for (ep in selected) {
                     try {
-                        val streams = GenericPlayerResolver.resolvePlayerStreams(httpClient, ep.iframeUrl, ep.iframeUrl)
-                        val streamUrl = if (streams.isNotEmpty()) streams[0].url else ep.iframeUrl
-
-                        val task = DownloadTask(
-                            id = UUID.randomUUID().toString(),
-                            mediaTitle = mediaTitle,
-                            studioName = studioName,
-                            episodeNumber = ep.number,
-                            episodeTitle = ep.title,
-                            iframeUrl = ep.iframeUrl,
-                            streamUrl = streamUrl,
-                            referer = ep.iframeUrl,
-                            quality = quality,
-                            format = format,
-                            folderName = animeFolder
-                        )
-
-                        val svcIntent = Intent(this@MainActivity, DownloadService::class.java).apply {
-                            action = DownloadService.ACTION_START_DOWNLOAD
-                            putExtra(DownloadService.EXTRA_TASK, task)
-                        }
-                        ContextCompat.startForegroundService(this@MainActivity, svcIntent)
-                    } catch (ignored: Exception) {}
+                        val task = buildDownloadTask(ep, mediaTitle, studioName, false, quality, format, animeFolder)
+                        startDownloadService(task)
+                        enqueuedCount++
+                    } catch (_: Exception) {}
                 }
             }
 
-            Toast.makeText(this@MainActivity, "Додано до черги: ${selected.size} серій", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this@MainActivity, "Додано до черги: $enqueuedCount серій", Toast.LENGTH_SHORT).show()
             startActivity(Intent(this@MainActivity, DownloadsActivity::class.java))
         }
     }
 
-    override fun onBackPressed() {
-        if (tabLayout.selectedTabPosition == 1) {
-            tabLayout.getTabAt(0)?.select()
-        } else if (webView.canGoBack()) {
-            webView.goBack()
-        } else {
-            super.onBackPressed()
+    private fun resolveFolderName(isSingle: Boolean, mediaTitle: String, studioName: String): String {
+        return when {
+            isSingle -> "Downloads"
+            studioName.isNotEmpty() && studioName != "Оригінал" -> "$mediaTitle [$studioName]"
+            else -> mediaTitle
         }
+    }
+
+    private fun buildDownloadTask(
+        episode: EpisodeItem,
+        mediaTitle: String,
+        studioName: String,
+        isSingle: Boolean,
+        quality: String,
+        format: String,
+        folderName: String
+    ): DownloadTask {
+        val streams = GenericPlayerResolver.resolvePlayerStreams(httpClient, episode.iframeUrl, episode.iframeUrl)
+        val chosenStream = if (streams.isNotEmpty()) ExtractorUtils.selectBestStream(streams, quality) else null
+        val streamUrl = chosenStream?.url ?: episode.iframeUrl
+        val referer = chosenStream?.headers?.get("Referer") ?: episode.iframeUrl
+
+        return DownloadTask(
+            id = UUID.randomUUID().toString(),
+            mediaTitle = mediaTitle,
+            studioName = studioName,
+            episodeNumber = if (isSingle) "1" else episode.number,
+            episodeTitle = episode.title,
+            iframeUrl = episode.iframeUrl,
+            streamUrl = streamUrl,
+            referer = referer,
+            quality = quality,
+            format = format,
+            folderName = folderName
+        )
+    }
+
+    private fun startDownloadService(task: DownloadTask) {
+        val svcIntent = Intent(this, DownloadService::class.java).apply {
+            action = DownloadService.ACTION_START_DOWNLOAD
+            putExtra(DownloadService.EXTRA_TASK, task)
+        }
+        ContextCompat.startForegroundService(this, svcIntent)
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
+        binding.webviewShortcut.onResume()
+        updateActiveDownloadsBadge()
     }
 
     override fun onPause() {
-        webView.onPause()
+        binding.webviewShortcut.onPause()
         super.onPause()
     }
 
     override fun onDestroy() {
-        webView.destroy()
+        queueManager.removeListener(downloadBadgeListener)
+        binding.webviewShortcut.destroy()
         super.onDestroy()
     }
 }

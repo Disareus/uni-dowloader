@@ -37,10 +37,16 @@ class SecureStorageManager private constructor(context: Context) {
     @Synchronized
     private fun initEncryptedPreferences() {
         try {
-            val masterKey = MasterKey.Builder(context)
-                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-                .setRequestStrongBoxBacked(true)
-                .build()
+            val masterKey = try {
+                MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .setRequestStrongBoxBacked(true)
+                    .build()
+            } catch (_: Exception) {
+                MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+            }
 
             encryptedPrefs = EncryptedSharedPreferences.create(
                 context,

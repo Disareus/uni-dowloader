@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.google.android.material.card.MaterialCardView 
+<com.google.android.material.card.MaterialCardView
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
+    android:layout_marginHorizontal="16dp"
     android:layout_marginBottom="8dp"
     app:cardBackgroundColor="@color/aniyomi_surface"
     app:cardCornerRadius="14dp"
@@ -77,22 +78,26 @@
         <!-- Single Episode Download Icon Button -->
         <ImageButton
             android:id="@+id/btn_single_download"
-            android:layout_width="38dp"
-            android:layout_height="38dp"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Download this episode"
-            android:src="@android:drawable/stat_sys_download"
+            android:contentDescription="Завантажити серію"
+            android:padding="9dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_download"
             app:tint="@color/text_secondary" />
 
         <!-- Single Episode Play (ExoPlayer) Icon Button -->
         <ImageButton
             android:id="@+id/btn_play_preview"
-            android:layout_width="38dp"
-            android:layout_height="38dp"
+            android:layout_width="40dp"
+            android:layout_height="40dp"
             android:layout_marginStart="4dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Play preview"
-            android:src="@android:drawable/ic_media_play"
+            android:contentDescription="Перегляд серії"
+            android:padding="8dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_play"
             app:tint="@color/accent_cyan" />
 
     </LinearLayout>

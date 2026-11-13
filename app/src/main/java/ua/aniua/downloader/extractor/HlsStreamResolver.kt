@@ -18,14 +18,11 @@ object HlsStreamResolver {
         try {
             val request = Request.Builder()
                 .url(cleanMasterUrl)
-                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Referer", referer ?: cleanMasterUrl)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (!response.isSuccessful || response.body == null) return emptyList()
-
-            val content = response.body?.string() ?: return emptyList()
+            val content = ExtractorUtils.executeForString(client, request) ?: return emptyList()
             if (!content.contains("#EXT-X-STREAM-INF")) {
                 // Це вже медіа-плейлист, а не master-плейлист
                 return listOf(StreamQuality("Auto", 720, cleanMasterUrl, true))

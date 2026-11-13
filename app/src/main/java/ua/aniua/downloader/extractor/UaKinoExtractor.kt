@@ -7,14 +7,12 @@ import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
-import java.net.URI
 import java.util.Locale
 import java.util.regex.Pattern
 
 object UaKinoExtractor {
 
     private val JS_PLAYER_FILE_PATTERN = Pattern.compile("(?:file|src)\\s*:\\s*[\"']([^\"']+)[\"']")
-    private val JS_IFRAME_PATTERN = Pattern.compile("<iframe[^>]+(?:src|data-src)=[\"']([^\"']+)[\"']")
 
     fun isUaKinoUrl(url: String): Boolean {
         val lower = url.lowercase(Locale.ROOT)
@@ -22,24 +20,24 @@ object UaKinoExtractor {
     }
 
     fun parsePage(client: OkHttpClient, pageUrl: String): MediaInfo {
-        val uri = URI(pageUrl)
-        val baseOrigin = "${uri.scheme}://${uri.host}"
+        val normalizedPageUrl = ExtractorUtils.ensureHttpsScheme(pageUrl)
+        val baseOrigin = ExtractorUtils.extractBaseOrigin(normalizedPageUrl, "https://uakino.me")
 
         val request = Request.Builder()
-            .url(pageUrl)
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+            .url(normalizedPageUrl)
+            .header("User-Agent", ExtractorUtils.DEFAULT_UA)
             .header("Referer", "$baseOrigin/")
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
             .header("Accept-Language", "uk,en-US;q=0.9,en;q=0.8")
             .build()
 
-        val response = client.newCall(request).execute()
-        if (!response.isSuccessful || response.body == null) {
-            throw IllegalStateException("HTTP error ${response.code}")
+        val html = client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful || response.body == null) {
+                throw IllegalStateException("HTTP error ${response.code}")
+            }
+            response.body?.string() ?: ""
         }
-
-        val html = response.body?.string() ?: ""
-        val doc = Jsoup.parse(html, pageUrl)
+        val doc = Jsoup.parse(html, normalizedPageUrl)
 
         val titleEl = doc.selectFirst("h1 span.solototle")
             ?: doc.selectFirst("h1[itemprop='name']")
@@ -63,17 +61,17 @@ object UaKinoExtractor {
         val descEl = doc.selectFirst("div[itemprop='description'], .ftext, .full-text")
         val description = descEl?.text()?.trim()
 
-        val newsId = DlePlaylistParser.extractNewsId(pageUrl, html, doc)
+        val newsId = DlePlaylistParser.extractNewsId(normalizedPageUrl, html, doc)
         val xfname = DlePlaylistParser.extractXfname(doc)
         val userHash = DlePlaylistParser.extractLoginHash(html)
 
-        var studios = mutableListOf<DubStudio>()
+        val studios = mutableListOf<DubStudio>()
 
         // 1. DLE Ajax Playlists
         if (newsId != null) {
             try {
-                studios.addAll(DlePlaylistParser.fetchDlePlaylists(client, baseOrigin, newsId, xfname, userHash, pageUrl))
-            } catch (ignored: Exception) {}
+                studios.addAll(DlePlaylistParser.fetchDlePlaylists(client, baseOrigin, newsId, xfname, userHash, normalizedPageUrl))
+            } catch (_: Exception) {}
         }
 
         // 2. Пошук серіалу Ashdi у вбудованих iframe
@@ -152,6 +150,17 @@ object UaKinoExtractor {
             }
         }
 
+        // 5.5 Універсальний fallback пошуку серій, якщо знайдено <= 1 серії
+        val maxExistingEps = studios.flatMap { it.players }.maxOfOrNull { it.episodes.size } ?: 0
+        if (maxExistingEps <= 1) {
+            val genericStudios = GenericSeriesExtractor.extractEpisodesFromDocument(client, normalizedPageUrl, html, doc, baseOrigin)
+            val maxGenericEps = genericStudios.flatMap { it.players }.maxOfOrNull { it.episodes.size } ?: 0
+            if (maxGenericEps > maxExistingEps) {
+                studios.clear()
+                studios.addAll(genericStudios)
+            }
+        }
+
         // 6. Визначення чи це серіал чи одиночний фільм
         val hasMultipleEpisodes = studios.any { s -> s.players.any { p -> p.episodes.size > 1 } }
         val titleLower = (title + " " + (description ?: "")).lowercase(Locale.ROOT)
@@ -167,7 +176,7 @@ object UaKinoExtractor {
         val rating = if (!rVal.isNullOrEmpty()) "★ $rVal" else null
 
         return MediaInfo(
-            url = pageUrl,
+            url = normalizedPageUrl,
             siteType = "uakino",
             title = title,
             originalTitle = originalTitle,
@@ -207,19 +216,6 @@ object UaKinoExtractor {
     }
 
     fun identifyPlayerName(url: String, index: Int): String {
-        val lower = url.lowercase(Locale.ROOT)
-        return when {
-            lower.contains("ashdi") -> "Ashdi"
-            lower.contains("tortuga") -> "Tortuga"
-            lower.contains("moon") -> "Moon"
-            lower.contains("fenix") -> "Fenix"
-            lower.contains("peertube") || lower.contains("peer") -> "PeerTube"
-            lower.contains("sibnet") -> "Sibnet"
-            lower.contains("kodik") -> "Kodik"
-            lower.contains("ustore") -> "Ustore"
-            lower.contains("alloha") -> "Alloha"
-            lower.contains("collaps") -> "Collaps"
-            else -> "Плеєр $index"
-        }
+        return ExtractorUtils.identifyPlayer(url, index).second
     }
 }

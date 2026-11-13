@@ -41,9 +41,11 @@ class DownloadQueueManager private constructor(context: Context) {
         }
     }
 
-    fun getAllTasks(): List<DownloadTask> = tasks.values.sortedByDescending { it.createdAt }
+    fun getAllTasks(): List<DownloadTask> = tasks.values.map { it.copy() }.sortedByDescending { it.createdAt }
 
-    fun getTask(taskId: String): DownloadTask? = tasks[taskId]
+    fun getActiveCount(): Int = tasks.values.count {
+        it.state == DownloadState.PENDING || it.state == DownloadState.DOWNLOADING
+    }
 
     fun addListener(listener: (DownloadTask) -> Unit) {
         listeners.add(listener)
@@ -54,14 +56,21 @@ class DownloadQueueManager private constructor(context: Context) {
     }
 
     private fun notifyUpdate(task: DownloadTask) {
+        val snapshot = task.copy()
         mainHandler.post {
             for (listener in listeners) {
-                listener(task)
+                listener(snapshot)
             }
         }
     }
 
     fun enqueueDownload(task: DownloadTask) {
+        task.state = DownloadState.PENDING
+        task.progress = 0f
+        task.speed = ""
+        task.eta = ""
+        task.errorMessage = null
+
         tasks[task.id] = task
         val cancelToken = AtomicBoolean(false)
         cancelTokens[task.id] = cancelToken
@@ -71,8 +80,15 @@ class DownloadQueueManager private constructor(context: Context) {
         executor.execute {
             var outStream: OutputStream? = null
             var contentUri: Uri? = null
+            var legacyFile: File? = null
 
             try {
+                if (cancelToken.get()) {
+                    task.state = DownloadState.CANCELLED
+                    notifyUpdate(task)
+                    return@execute
+                }
+
                 val safeTitle = downloadSecurity.sanitizeFileName(task.mediaTitle)
                 val safeStudio = if (task.studioName.isNotEmpty() && task.studioName != "Оригінал") {
                     downloadSecurity.sanitizeFileName(task.studioName)
@@ -83,12 +99,15 @@ class DownloadQueueManager private constructor(context: Context) {
                 val folderToUse = task.folderName?.ifEmpty { null } ?: animeFolder
                 task.folderName = folderToUse
 
-                val isSingleVideo = task.episodeNumber == "0" || task.episodeNumber.isEmpty() ||
+                val isSeriesFolder = !task.folderName.isNullOrEmpty() && task.folderName != "Downloads"
+                val isSingleVideo = !isSeriesFolder && (
+                    task.episodeNumber == "0" || task.episodeNumber.isEmpty() ||
                         task.episodeTitle.contains("Повне відео") ||
                         task.episodeTitle.contains("YouTube") ||
                         task.episodeTitle.contains("TikTok") ||
                         task.episodeTitle.contains("Instagram") ||
                         task.mediaTitle == task.episodeTitle
+                    )
 
                 val fileName = if (isSingleVideo) {
                     "$safeTitle [${task.quality}].${task.format}"
@@ -105,6 +124,7 @@ class DownloadQueueManager private constructor(context: Context) {
                     val targetDir = downloadSecurity.getGuardedStorageDir(folderToUse)
                     val finalFile = File(targetDir, fileName)
                     downloadSecurity.validateCanonicalDestination(finalFile, targetDir)
+                    legacyFile = finalFile
                     task.savedFilePath = finalFile.absolutePath
                     FileOutputStream(finalFile)
                 }
@@ -129,30 +149,60 @@ class DownloadQueueManager private constructor(context: Context) {
                     cancelToken
                 )
 
-                if (contentUri != null && task.state == DownloadState.COMPLETED) {
+                if (task.state == DownloadState.COMPLETED && contentUri != null) {
                     downloadSecurity.publishPendingVideo(contentUri)
+                } else if (task.state != DownloadState.COMPLETED) {
+                    cleanupPartialOutput(contentUri, legacyFile)
                 }
 
                 notifyUpdate(task)
-
             } catch (e: Exception) {
-                task.state = DownloadState.ERROR
-                task.errorMessage = e.message ?: "Помилка завантаження"
+                task.state = if (cancelToken.get()) DownloadState.CANCELLED else DownloadState.ERROR
+                task.errorMessage = if (task.state == DownloadState.ERROR) (e.message ?: "Помилка завантаження") else null
+                cleanupPartialOutput(contentUri, legacyFile)
                 notifyUpdate(task)
             } finally {
                 try {
                     outStream?.close()
-                } catch (ignored: Exception) {}
+                } catch (_: Exception) {}
             }
+        }
+    }
+
+    private fun cleanupPartialOutput(contentUri: Uri?, legacyFile: File?) {
+        if (contentUri != null) {
+            try {
+                context.contentResolver.delete(contentUri, null, null)
+            } catch (_: Exception) {}
+        }
+        if (legacyFile != null && legacyFile.exists()) {
+            try {
+                legacyFile.delete()
+            } catch (_: Exception) {}
         }
     }
 
     fun cancelTask(taskId: String) {
         cancelTokens[taskId]?.set(true)
         tasks[taskId]?.let {
-            it.state = DownloadState.CANCELLED
-            notifyUpdate(it)
+            if (it.state == DownloadState.PENDING || it.state == DownloadState.DOWNLOADING || it.state == DownloadState.PAUSED) {
+                it.state = DownloadState.CANCELLED
+                notifyUpdate(it)
+            }
         }
+    }
+
+    fun retryTask(taskId: String) {
+        val existing = tasks[taskId] ?: return
+        if (existing.state == DownloadState.ERROR || existing.state == DownloadState.CANCELLED) {
+            enqueueDownload(existing)
+        }
+    }
+
+    fun removeTask(taskId: String) {
+        cancelTokens[taskId]?.set(true)
+        cancelTokens.remove(taskId)
+        tasks.remove(taskId)
     }
 
     fun clearFinished() {

@@ -1,7 +1,6 @@
 package ua.aniua.downloader.extractor
 
 import com.google.gson.JsonArray
-import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -14,9 +13,6 @@ import java.net.URI
 import java.util.regex.Pattern
 
 object PeerTubeExtractor {
-
-    private const val DEFAULT_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     private val JSON_LD_PATTERN = Pattern.compile("<script type=[\"']application/ld\\+json[\"']>([\\s\\S]*?)</script>")
     private val M3U8_PATTERN = Pattern.compile("(https?://[^\\s\"'<>]+?\\.m3u8[^\\s\"'<>]*)")
@@ -61,14 +57,13 @@ object PeerTubeExtractor {
             try {
                 val apiReq = Request.Builder()
                     .url(apiUrl)
-                    .header("User-Agent", DEFAULT_UA)
+                    .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                     .header("Referer", referer ?: iframeUrl)
                     .header("Accept", "application/json")
                     .build()
 
-                val apiResp = client.newCall(apiReq).execute()
-                if (apiResp.isSuccessful && apiResp.body != null) {
-                    val bodyStr = apiResp.body?.string() ?: ""
+                val bodyStr = ExtractorUtils.executeForString(client, apiReq)
+                if (!bodyStr.isNullOrEmpty()) {
                     val root = JsonParser.parseString(bodyStr).asJsonObject
 
                     // Парсимо HLS стріми (streamingPlaylists)
@@ -142,13 +137,12 @@ object PeerTubeExtractor {
         try {
             val htmlReq = Request.Builder()
                 .url(iframeUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Referer", referer ?: iframeUrl)
                 .build()
 
-            val htmlResp = client.newCall(htmlReq).execute()
-            if (htmlResp.isSuccessful && htmlResp.body != null) {
-                val html = htmlResp.body?.string() ?: ""
+            val html = ExtractorUtils.executeForString(client, htmlReq)
+            if (!html.isNullOrEmpty()) {
 
                 // 2.1 Перевірка schema.org JSON-LD (contentUrl)
                 val mJsonLd = JSON_LD_PATTERN.matcher(html)
@@ -203,13 +197,13 @@ object PeerTubeExtractor {
         try {
             val apiReq = Request.Builder()
                 .url(apiUrl)
-                .header("User-Agent", DEFAULT_UA)
+                .header("User-Agent", ExtractorUtils.DEFAULT_UA)
                 .header("Accept", "application/json")
                 .build()
 
-            val apiResp = client.newCall(apiReq).execute()
-            if (apiResp.isSuccessful && apiResp.body != null) {
-                val root = JsonParser.parseString(apiResp.body?.string() ?: "").asJsonObject
+            val bodyStr = ExtractorUtils.executeForString(client, apiReq)
+            if (!bodyStr.isNullOrEmpty()) {
+                val root = JsonParser.parseString(bodyStr).asJsonObject
                 title = root.get("name")?.asString ?: title
                 description = root.get("description")?.asString
 

@@ -23,9 +23,14 @@ object HlsStreamResolver {
                 .build()
 
             val content = ExtractorUtils.executeForString(client, request) ?: return emptyList()
+            if (!content.contains("#EXTM3U")) return emptyList()
             if (!content.contains("#EXT-X-STREAM-INF")) {
                 // Це вже медіа-плейлист, а не master-плейлист
-                return listOf(StreamQuality("Auto", 720, cleanMasterUrl, true))
+                val sq = StreamQuality("Auto", 720, cleanMasterUrl, true)
+                if (referer != null) {
+                    sq.headers["Referer"] = referer
+                }
+                return listOf(sq)
             }
 
             val baseUri = URI(cleanMasterUrl)

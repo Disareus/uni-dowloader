@@ -57,7 +57,7 @@ object HlsSegmentDownloader {
         var streamUrl = task.streamUrl
         var referer = task.referer.ifEmpty { task.iframeUrl }
 
-        if (streamUrl.isEmpty() || !ExtractorUtils.isDirectMediaUrl(streamUrl)) {
+        fun resolveFreshStream() {
             val resolved = GenericPlayerResolver.resolvePlayerStreams(client, task.iframeUrl, referer)
             if (resolved.isEmpty()) {
                 throw IllegalStateException("Не вдалося отримати потік відео з плеєра: ${task.iframeUrl}")
@@ -69,8 +69,32 @@ object HlsSegmentDownloader {
             task.referer = referer
         }
 
-        if (streamUrl.contains(".m3u8", ignoreCase = true)) {
-            downloadHlsStream(context, client, streamUrl, referer, task.quality, outputStream, listener, isCancelled)
+        if (streamUrl.isEmpty() || !ExtractorUtils.isDirectMediaUrl(streamUrl)) {
+            resolveFreshStream()
+        }
+
+        val canRetryFresh = task.iframeUrl.isNotEmpty() &&
+            task.iframeUrl != streamUrl &&
+            !ExtractorUtils.isDirectMediaUrl(task.iframeUrl)
+
+        if (ExtractorUtils.isHlsUrl(streamUrl)) {
+            try {
+                downloadHlsStream(context, client, streamUrl, referer, task.quality, outputStream, listener, isCancelled)
+            } catch (e: Exception) {
+                val isInitialPlaylistFailure = e.message?.let {
+                    it.contains("HLS m3u8") || it.contains("Порожній m3u8") || it.contains("медіа-плейлиста HLS")
+                } == true
+                if (isCancelled?.get() != true && canRetryFresh && isInitialPlaylistFailure) {
+                    resolveFreshStream()
+                    if (ExtractorUtils.isHlsUrl(streamUrl)) {
+                        downloadHlsStream(context, client, streamUrl, referer, task.quality, outputStream, listener, isCancelled)
+                    } else {
+                        downloadDirectFile(client, streamUrl, referer, outputStream, listener, isCancelled)
+                    }
+                } else {
+                    throw e
+                }
+            }
         } else {
             downloadDirectFile(client, streamUrl, referer, outputStream, listener, isCancelled)
         }

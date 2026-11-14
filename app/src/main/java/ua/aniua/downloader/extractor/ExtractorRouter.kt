@@ -5,7 +5,7 @@ import ua.aniua.downloader.model.MediaInfo
 
 object ExtractorRouter {
 
-    fun analyzeUrl(client: OkHttpClient, url: String): MediaInfo {
+    fun analyzeUrl(client: OkHttpClient, url: String, preloadedHtml: String? = null): MediaInfo {
         val cleanUrl = ExtractorUtils.ensureHttpsScheme(url)
         val lowerUrl = cleanUrl.lowercase()
 
@@ -60,6 +60,6 @@ object ExtractorRouter {
         }
 
         // 9. Інші сайти та універсальні веб-сторінки з відео/серіалами
-        return GenericSeriesExtractor.parseGenericPage(client, cleanUrl)
+        return GenericSeriesExtractor.parseGenericPage(client, cleanUrl, preloadedHtml)
     }
 }

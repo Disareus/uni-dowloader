@@ -22,7 +22,7 @@ import java.util.regex.Pattern
 object GenericSeriesExtractor {
 
     private val EPISODE_URL_PATTERN = Pattern.compile(
-        "(?:^|/|-|\\?|&)(?:episode|ep|serie|seria|e|s\\d+e)[-_=/]?(\\d{1,4})(?:$|/|\\.|\\?|&|-)",
+        "(?:^|/|-|\\?|&)(?:episode|ep|seria|s\\d+e)[-_=/]?(\\d{1,4})(?:$|/|\\.|\\?|&|-)",
         Pattern.CASE_INSENSITIVE
     )
     private val SEASON_EP_PATH_PATTERN = Pattern.compile(
@@ -30,6 +30,15 @@ object GenericSeriesExtractor {
         Pattern.CASE_INSENSITIVE
     )
     private val S_E_COMPACT_PATTERN = Pattern.compile("s(\\d{1,3})e(\\d{1,4})", Pattern.CASE_INSENSITIVE)
+    private val SEASON_X_EP_PATTERN = Pattern.compile(
+        "(?:^|[^0-9a-zA-Z])(\\d{1,3})x(\\d{1,4})(?:$|[^0-9a-zA-Z])",
+        Pattern.CASE_INSENSITIVE
+    )
+    private val SEASON_TAB_TEXT_PATTERN = Pattern.compile(
+        "^(?:season|сезон|s)\\s*(\\d{1,3})$",
+        Pattern.CASE_INSENSITIVE
+    )
+    private val RESOLUTION_NUMBERS = setOf(240, 320, 360, 480, 640, 720, 800, 1024, 1080, 1280, 1440, 1920, 3840)
     private val EPISODE_TEXT_PATTERN = Pattern.compile(
         "(?:Episode|Ep\\.?|EP|Серія|Серия)\\s*(\\d{1,4})",
         Pattern.CASE_INSENSITIVE
@@ -100,7 +109,11 @@ object GenericSeriesExtractor {
         val discoveredIframeUrls: List<String>
     )
 
-    fun parseGenericPage(client: OkHttpClient, cleanUrl: String): MediaInfo {
+    fun parseGenericPage(
+        client: OkHttpClient,
+        cleanUrl: String,
+        preloadedHtml: String? = null
+    ): MediaInfo {
         if (ExtractorUtils.isDirectMediaUrl(cleanUrl)) {
             val qualities = GenericPlayerResolver.resolvePlayerStreams(client, cleanUrl, cleanUrl)
             val studio = DubStudio("direct_studio", "Оригінал")
@@ -125,8 +138,8 @@ object GenericSeriesExtractor {
         }
 
         val baseOrigin = ExtractorUtils.extractBaseOrigin(cleanUrl, "")
-        var html = ""
-        if (cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://")) {
+        var html = preloadedHtml?.trim().orEmpty()
+        if (html.isEmpty() && (cleanUrl.startsWith("http://") || cleanUrl.startsWith("https://"))) {
             val req = Request.Builder()
                 .url(cleanUrl)
                 .header("User-Agent", ExtractorUtils.DEFAULT_UA)
@@ -139,11 +152,13 @@ object GenericSeriesExtractor {
             html = ExtractorUtils.executeForString(client, req) ?: ""
         }
 
-        if (html.isEmpty()) {
-            val qualities = GenericPlayerResolver.resolvePlayerStreams(client, cleanUrl, cleanUrl)
+        val isBlockedOrEmpty = html.isEmpty() || isChallengeOrBlockedHtml(html)
+        if (isBlockedOrEmpty && !isSeriesUrlCandidate(cleanUrl)) {
+            val qualities = if (html.isEmpty()) GenericPlayerResolver.resolvePlayerStreams(client, cleanUrl, cleanUrl) else emptyList()
             val studio = DubStudio("direct_studio", "Оригінал")
             val player = PlayerSource("direct_player", "Плеєр")
-            player.episodes.add(EpisodeItem("ep_direct", "1", "Онлайн Відео", "1", cleanUrl))
+            val fallbackTitle = extractTitleFromUrlSlug(cleanUrl).ifEmpty { "Онлайн Відео" }
+            player.episodes.add(EpisodeItem("ep_direct", "1", fallbackTitle, "1", cleanUrl))
             studio.players.add(player)
             val labels = if (qualities.isNotEmpty()) {
                 qualities.map { it.label }.distinct().toMutableList()
@@ -153,15 +168,16 @@ object GenericSeriesExtractor {
             return MediaInfo(
                 url = cleanUrl,
                 siteType = extractSiteBadge(cleanUrl),
-                title = "Онлайн Відео",
+                title = fallbackTitle,
                 isSeries = false,
                 studios = mutableListOf(studio),
                 availableQualities = labels
             )
         }
 
-        val doc = Jsoup.parse(html, cleanUrl)
-        val parsed = parseDocumentInternal(client, cleanUrl, html, doc, baseOrigin, allowNetwork = true)
+        val effectiveHtml = if (isChallengeOrBlockedHtml(html)) "" else html
+        val doc = Jsoup.parse(effectiveHtml, cleanUrl)
+        val parsed = parseDocumentInternal(client, cleanUrl, effectiveHtml, doc, baseOrigin, allowNetwork = true)
 
         var title = parsed.title
         var posterUrl = parsed.posterUrl
@@ -177,7 +193,7 @@ object GenericSeriesExtractor {
                 firstEpUrl.startsWith("http") && isSameSiteHost(cleanUrl, firstEpUrl)
             ) {
                 val hopHtml = fetchHtmlWithReferer(client, firstEpUrl, cleanUrl)
-                if (!hopHtml.isNullOrEmpty()) {
+                if (!hopHtml.isNullOrEmpty() && !isChallengeOrBlockedHtml(hopHtml)) {
                     val hopDoc = Jsoup.parse(hopHtml, firstEpUrl)
                     val hopStudios = extractEpisodesFromDocument(client, firstEpUrl, hopHtml, hopDoc, baseOrigin)
                     val hopEpsCount = hopStudios.flatMap { it.players }.sumOf { it.episodes.size }
@@ -193,7 +209,7 @@ object GenericSeriesExtractor {
         val expansionResult = expandEpisodesByCountAndMetadata(
             client = client,
             cleanUrl = cleanUrl,
-            html = html,
+            html = effectiveHtml,
             seriesTitle = title,
             studios = studios,
             expectedEpisodeCount = parsed.expectedEpisodeCount,
@@ -220,6 +236,15 @@ object GenericSeriesExtractor {
                 val ps = PlayerSource("player_$idx", pName)
                 ps.episodes.add(EpisodeItem("ep_1", "1", title, "1", ifrUrl))
                 fallbackPlayers.add(ps)
+            }
+            if (fallbackPlayers.isEmpty() && !parsed.hasSeriesIndicators) {
+                val movieBackupUrls = buildBackupMovieEmbedUrls(extractTmdbIdFromUrl(cleanUrl), findImdbId(cleanUrl, effectiveHtml))
+                for ((idx, mUrl) in movieBackupUrls.withIndex()) {
+                    val (_, pName) = ExtractorUtils.identifyPlayer(mUrl, idx + 1)
+                    val ps = PlayerSource("movie_backup_$idx", pName)
+                    ps.episodes.add(EpisodeItem("ep_1", "1", title, "1", mUrl))
+                    fallbackPlayers.add(ps)
+                }
             }
             if (fallbackPlayers.isEmpty()) {
                 val ps = PlayerSource("direct_player", "Плеєр")
@@ -283,13 +308,14 @@ object GenericSeriesExtractor {
 
     internal fun parseDocumentOffline(pageUrl: String, html: String): MediaInfo {
         val baseOrigin = ExtractorUtils.extractBaseOrigin(pageUrl, "")
-        val doc = Jsoup.parse(html, pageUrl)
-        val parsed = parseDocumentInternal(null, pageUrl, html, doc, baseOrigin, allowNetwork = false)
+        val effectiveHtml = if (isChallengeOrBlockedHtml(html)) "" else html
+        val doc = Jsoup.parse(effectiveHtml, pageUrl)
+        val parsed = parseDocumentInternal(null, pageUrl, effectiveHtml, doc, baseOrigin, allowNetwork = false)
 
         expandEpisodesByCountAndMetadata(
             client = null,
             cleanUrl = pageUrl,
-            html = html,
+            html = effectiveHtml,
             seriesTitle = parsed.title,
             studios = parsed.studios,
             expectedEpisodeCount = parsed.expectedEpisodeCount,
@@ -328,11 +354,11 @@ object GenericSeriesExtractor {
         baseOrigin: String,
         allowNetwork: Boolean
     ): ParsedPageResult {
-        val rawTitle = extractRawTitle(doc)
+        val rawTitle = extractRawTitle(doc, cleanUrl)
         val structured = parseStructuredJsonEpisodes(doc, cleanUrl, baseOrigin)
 
-        var title = cleanSeriesTitle(rawTitle.ifEmpty { structured.title ?: "Онлайн Відео" })
-        if (title.isEmpty()) title = "Онлайн Відео"
+        var title = cleanSeriesTitle(rawTitle.ifEmpty { structured.title ?: extractTitleFromUrlSlug(cleanUrl) }.ifEmpty { "Онлайн Відео" })
+        if (title.isEmpty()) title = extractTitleFromUrlSlug(cleanUrl).ifEmpty { "Онлайн Відео" }
 
         val origEl = doc.selectFirst(".orig-title, span.origintitle, [itemprop='alternateName'], .film-name-orig, .alias")
         val originalTitle = origEl?.text()?.trim()?.takeIf { it.isNotEmpty() }
@@ -405,6 +431,13 @@ object GenericSeriesExtractor {
             if (domStudios.isNotEmpty()) studios.addAll(domStudios)
         }
 
+        // 3.5b Multi-season tabs/dropdowns (e.g. "Select Seasons" / "Season 1..13")
+        if (allowNetwork && client != null) {
+            fetchAdditionalSeasonsIfAvailable(client, doc, html, cleanUrl, baseOrigin, studios)
+        }
+
+        splitMultiSeasonStudioIfNeeded(studios)
+
         val expectedCount = extractExpectedEpisodeCount(doc, html, structured.totalEpisodes)
         val hasSeriesIndicators = detectSeriesIndicators(cleanUrl, doc, rawTitle, structured.isSeriesHint, discoveredIframes, expectedCount)
 
@@ -424,12 +457,78 @@ object GenericSeriesExtractor {
         )
     }
 
-    private fun extractRawTitle(doc: Document): String {
+    private fun extractRawTitle(doc: Document, cleanUrl: String = ""): String {
         val ogTitle = doc.selectFirst("meta[property='og:title']")?.attr("content")?.trim()
         val twTitle = doc.selectFirst("meta[name='twitter:title']")?.attr("content")?.trim()
         val h1 = doc.selectFirst("h1")?.text()?.trim()
         val tagTitle = doc.title().trim()
-        return listOfNotNull(ogTitle, twTitle, h1, tagTitle).firstOrNull { it.isNotEmpty() } ?: ""
+        val candidate = listOfNotNull(ogTitle, twTitle, h1, tagTitle).firstOrNull {
+            it.isNotEmpty() && !isBlockedTitle(it)
+        } ?: ""
+        return candidate.ifEmpty { extractTitleFromUrlSlug(cleanUrl) }
+    }
+
+    private fun isBlockedTitle(title: String): Boolean {
+        val lower = title.lowercase(Locale.ROOT)
+        return lower.contains("just a moment") ||
+            lower.contains("attention required") ||
+            lower.contains("403 forbidden") ||
+            lower.contains("access denied") ||
+            lower.contains("cloudflare")
+    }
+
+    internal fun isChallengeOrBlockedHtml(html: String): Boolean {
+        if (html.isBlank()) return false
+        val lower = html.lowercase(Locale.ROOT)
+        return lower.contains("cf-browser-verification") ||
+            lower.contains("challenges.cloudflare.com") ||
+            lower.contains("<title>just a moment") ||
+            lower.contains("attention required! | cloudflare") ||
+            lower.contains("enable javascript and cookies to continue")
+    }
+
+    internal fun extractTmdbIdFromUrl(url: String): String? {
+        val m = Pattern.compile("/(?:serie|series|tv|movie)/(\\d{1,8})(?:/|-|$)", Pattern.CASE_INSENSITIVE).matcher(url)
+        return if (m.find()) m.group(1) else null
+    }
+
+    internal fun extractTitleFromUrlSlug(url: String): String {
+        return try {
+            val path = URI(ExtractorUtils.ensureHttpsScheme(url)).path ?: return ""
+            val ignoredSegments = setOf("serie", "series", "tv", "movie", "movies", "watch", "episode", "episodes", "ep", "anime", "serial", "season")
+            val segments = path.split('/').filter { it.isNotBlank() }
+            val slug = segments.lastOrNull { seg ->
+                val lower = seg.lowercase(Locale.ROOT)
+                lower !in ignoredSegments && !seg.all { it.isDigit() } && !lower.matches(Regex("^season[-_]?\\d+$"))
+            } ?: return ""
+
+            var cleaned = slug
+                .replace(Regex("(?i)\\.html?$"), "")
+                .replace(Regex("(?i)(?:-episode|-ep|-season|-seria)[-_]?\\d+.*$"), "")
+                .replace(Regex("(?i)-\\d{1,3}x\\d{1,4}.*$"), "")
+                .replace(Regex("(?i)-s\\d{1,3}e\\d{1,4}.*$"), "")
+                .replace(Regex("^\\d+[-_]"), "")
+                .replace('-', ' ')
+                .replace('_', ' ')
+                .trim()
+            if (cleaned.isEmpty()) return ""
+            cleaned = cleaned.split(Regex("\\s+")).joinToString(" ") { word ->
+                word.replaceFirstChar { ch -> if (ch.isLowerCase()) ch.titlecase(Locale.ROOT) else ch.toString() }
+            }
+            cleaned
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    private fun isSeriesUrlCandidate(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT)
+        return lower.contains("/serie/") ||
+            lower.contains("/series/") ||
+            lower.contains("/serial") ||
+            lower.contains("/tv/") ||
+            lower.contains("/anime/") ||
+            hasEpisodeInUrl(url)
     }
 
     internal fun cleanSeriesTitle(rawTitle: String): String {
@@ -494,8 +593,7 @@ object GenericSeriesExtractor {
         val urls = linkedSetOf<String>()
         val iframes = doc.select("iframe[src], iframe[data-src], iframe[data-lazy-src]")
         for (ifr in iframes) {
-            val raw = ifr.attr("src").ifEmpty { ifr.attr("data-src") }.ifEmpty { ifr.attr("data-lazy-src") }.trim()
-            if (raw.isEmpty() || raw == "about:blank" || raw.startsWith("javascript:")) continue
+            val raw = GenericPlayerResolver.extractIframeSrc(ifr) ?: continue
             val lower = raw.lowercase(Locale.ROOT)
             if (AD_OR_TRACKER_IFRAME_HINTS.any { lower.contains(it) }) continue
             urls.add(DlePlaylistParser.normalizeUrl(raw, baseOrigin))
@@ -1051,25 +1149,31 @@ object GenericSeriesExtractor {
         node: JsonElement?,
         baseOrigin: String,
         pageUrl: String,
-        state: RecursiveJsonScanState
+        state: RecursiveJsonScanState,
+        parentSeason: String? = null
     ) {
         if (node == null || node.isJsonNull) return
         if (node.isJsonArray) {
             for (child in node.asJsonArray) {
-                scanJsonStateRecursively(child, baseOrigin, pageUrl, state)
+                scanJsonStateRecursively(child, baseOrigin, pageUrl, state, parentSeason)
             }
             return
         }
         if (!node.isJsonObject) return
 
         val obj = node.asJsonObject
+        val currentSeason = obj.getStringOrNull("season_number")
+            ?: obj.getStringOrNull("seasonNumber")
+            ?: obj.getStringOrNull("season")
+            ?: parentSeason
+
         for (countKey in listOf(
             "numberOfEpisodes", "number_of_episodes", "totalEpisodes", "total_episodes",
-            "episodesCount", "episodes_count", "latestEpisode", "maxEpisode"
+            "episodesCount", "episodes_count"
         )) {
             val v = obj.getIntOrNull(countKey)
             if (v != null && v in 2..2000) {
-                state.totalEpisodes = maxOf(state.totalEpisodes ?: 0, v)
+                state.totalEpisodes = state.totalEpisodes ?: v
                 state.isSeriesHint = true
             }
         }
@@ -1100,6 +1204,7 @@ object GenericSeriesExtractor {
                     val season = epObj.getStringOrNull("season")
                         ?: epObj.getStringOrNull("seasonNumber")
                         ?: epObj.getStringOrNull("season_number")
+                        ?: currentSeason
                         ?: "1"
                     val rawUrl = extractUrlFromJsonObj(epObj)
                     val epUrl = if (!rawUrl.isNullOrEmpty()) {
@@ -1119,7 +1224,18 @@ object GenericSeriesExtractor {
                         )
                     )
                 }
-                if (parsedEps.size > state.episodes.size) {
+                val existingKeys = state.episodes.mapTo(mutableSetOf()) { "${it.season}:${it.number}" }
+                val existingSeasons = state.episodes.map { it.season }.toSet()
+                val newSeasons = parsedEps.map { it.season }.toSet()
+                val hasDisjointSeasons = existingSeasons.isNotEmpty() && (newSeasons - existingSeasons).isNotEmpty()
+                if (hasDisjointSeasons) {
+                    for (ep in parsedEps) {
+                        if (existingKeys.add("${ep.season}:${ep.number}")) {
+                            state.episodes.add(ep)
+                        }
+                    }
+                    state.isSeriesHint = true
+                } else if (parsedEps.size > state.episodes.size) {
                     state.episodes.clear()
                     state.episodes.addAll(parsedEps)
                     state.isSeriesHint = true
@@ -1127,9 +1243,16 @@ object GenericSeriesExtractor {
             }
         }
 
+        val ignoredJsonContainers = setOf(
+            "trending", "recommended", "recommendations", "related", "similar",
+            "popular", "latest", "recent", "spotlight", "suggestions", "schedule",
+            "comments", "mostviewed", "most_viewed", "topairing", "top_airing",
+            "featured", "sidebar"
+        )
         for (entry in obj.entrySet()) {
+            if (entry.key.lowercase(Locale.ROOT) in ignoredJsonContainers) continue
             if (entry.value.isJsonObject || entry.value.isJsonArray) {
-                scanJsonStateRecursively(entry.value, baseOrigin, pageUrl, state)
+                scanJsonStateRecursively(entry.value, baseOrigin, pageUrl, state, currentSeason)
             }
         }
     }
@@ -1141,7 +1264,10 @@ object GenericSeriesExtractor {
     ): List<DubStudio> {
         // 1. Data-attribute episode nodes
         val dataNodes = doc.select(
-            "[data-file], [data-iframe], [data-embed], [data-video], .episodes [data-src], .episode-list [data-src], .ep-list [data-src], .playlists-videos [data-src]"
+            "[data-file], [data-iframe], [data-embed], [data-video], " +
+                ".episodes [data-src], .episode-list [data-src], .ep-list [data-src], .playlists-videos [data-src], " +
+                ".episodes [data-url], .episode-list [data-url], [data-episode][data-url], [data-ep][data-url], " +
+                "[data-episode][data-href], [data-ep][data-href]"
         )
         if (dataNodes.isNotEmpty()) {
             val grouped = linkedMapOf<String, LinkedHashMap<String, PlayerSource>>()
@@ -1151,6 +1277,9 @@ object GenericSeriesExtractor {
                     .ifEmpty { node.attr("data-embed") }
                     .ifEmpty { node.attr("data-video") }
                     .ifEmpty { node.attr("data-src") }
+                    .ifEmpty { node.attr("data-url") }
+                    .ifEmpty { node.attr("data-href") }
+                    .ifEmpty { node.attr("data-link") }
                     .trim()
                 if (rawUrl.isEmpty() || rawUrl.startsWith("#") || rawUrl.startsWith("javascript")) continue
                 val lowerRaw = rawUrl.lowercase(Locale.ROOT)
@@ -1247,50 +1376,74 @@ object GenericSeriesExtractor {
         }
 
         // 4. Fallback scan of all <a href> matching explicit episode URL or text patterns
+        val ignoredContainerSelector = "header, nav, footer, aside, .sidebar, #sidebar, .related, .recommended, " +
+            ".similar, .comments, .popular, .trending, .latest-episodes, .widget, " +
+            "[class*='sidebar'], [class*='related'], [class*='recommend'], [class*='popular'], [class*='trending']"
         val allLinks = doc.select("a[href]")
-        val candidateEpisodes = mutableListOf<EpisodeItem>()
+        val candidateGroups = linkedMapOf<String, MutableList<EpisodeItem>>()
+        val pageDir = pageUrl.substringBefore("?").substringBefore("#").trimEnd('/').substringBeforeLast("/")
         for ((idx, link) in allLinks.withIndex()) {
+            if (link.closest(ignoredContainerSelector) != null) continue
             val href = link.attr("href").trim()
             if (href.isEmpty() || href.startsWith("#") || href.startsWith("javascript")) continue
-            val text = link.text().trim()
+            val cardText = extractCardText(link)
+            val cleanedDisplayText = stripIsoDates(cardText).ifEmpty { link.attr("title").trim() }
+            if (SEASON_TAB_TEXT_PATTERN.matcher(link.text().trim()).matches()) continue
 
             val fullHref = DlePlaylistParser.normalizeUrl(href, baseOrigin)
-            val seasonEp = extractSeasonAndEpisodeFromUrl(fullHref)
+            if (baseOrigin.isNotEmpty() && !fullHref.startsWith(baseOrigin, ignoreCase = true)) continue
+            val lowerHref = fullHref.lowercase(Locale.ROOT)
+            if (lowerHref.contains("/page/") || lowerHref.contains("/genre/") || lowerHref.contains("/year/") ||
+                lowerHref.contains("/tag/") || lowerHref.contains("/actor/") || lowerHref.contains("/director/")
+            ) continue
+
+            val seasonEp = extractSeasonAndEpisodeFromUrl(fullHref) ?: extractSeasonAndEpisodeFromText(cardText)
             val epFromUrl = extractEpisodeFromUrl(fullHref)
-            val epTextMatch = EPISODE_TEXT_PATTERN.matcher(text)
+            val epTextMatch = EPISODE_TEXT_PATTERN.matcher(cleanedDisplayText)
             val hasEpText = epTextMatch.find()
 
-            if (seasonEp != null) {
+            val item = if (seasonEp != null) {
                 val (s, e) = seasonEp
-                candidateEpisodes.add(
-                    EpisodeItem(
-                        id = "link_s${s}_e${e}_$idx",
-                        number = e.toString(),
-                        title = text.ifEmpty { "Season $s Episode $e" },
-                        season = s.toString(),
-                        iframeUrl = fullHref
-                    )
+                EpisodeItem(
+                    id = "link_s${s}_e${e}_$idx",
+                    number = e.toString(),
+                    title = cleanedDisplayText.ifEmpty { "Season $s Episode $e" },
+                    season = s.toString(),
+                    iframeUrl = fullHref
                 )
             } else if (epFromUrl != null || hasEpText) {
                 val epNum = epFromUrl?.toString() ?: epTextMatch.group(1) ?: continue
-                // Skip obvious non-episode links like /page/2, /genre/...
-                val lowerHref = fullHref.lowercase(Locale.ROOT)
-                if (lowerHref.contains("/page/") || lowerHref.contains("/genre/") || lowerHref.contains("/year/")) continue
-                candidateEpisodes.add(
-                    EpisodeItem(
-                        id = "link_e${epNum}_$idx",
-                        number = epNum,
-                        title = text.ifEmpty { "Episode $epNum" },
-                        season = "1",
-                        iframeUrl = fullHref
-                    )
+                EpisodeItem(
+                    id = "link_e${epNum}_$idx",
+                    number = epNum,
+                    title = cleanedDisplayText.ifEmpty { "Episode $epNum" },
+                    season = "1",
+                    iframeUrl = fullHref
                 )
+            } else {
+                null
+            }
+
+            if (item != null) {
+                val linkDir = fullHref.substringBefore("?").substringBefore("#").trimEnd('/').substringBeforeLast("/")
+                candidateGroups.getOrPut(linkDir) { mutableListOf() }.add(item)
             }
         }
 
-        val deduped = candidateEpisodes
-            .distinctBy { "${it.season}:${it.number}" }
-            .sortedWith(compareBy({ it.season.toIntOrNull() ?: 1 }, { it.number.toIntOrNull() ?: Int.MAX_VALUE }))
+        val chosenCandidates = candidateGroups[pageDir]?.takeIf { it.isNotEmpty() }
+            ?: candidateGroups.values.maxByOrNull { group ->
+                val distinctEps = group.map { "${it.season}:${it.number}" }.distinct()
+                val minEp = group.mapNotNull { it.number.toIntOrNull() }.minOrNull() ?: Int.MAX_VALUE
+                // Prefer groups starting near episode 1 and having more distinct episodes
+                distinctEps.size * 100 - if (minEp <= 3) 0 else 50
+            }
+            ?: emptyList()
+
+        val deduped = filterEpisodeOutliers(
+            chosenCandidates
+                .distinctBy { "${it.season}:${it.number}" }
+                .sortedWith(compareBy({ it.season.toIntOrNull() ?: 1 }, { it.number.toIntOrNull() ?: Int.MAX_VALUE }))
+        )
 
         if (deduped.isNotEmpty()) {
             val ps = PlayerSource("dom_scan_player", "Плеєр", deduped.toMutableList())
@@ -1300,23 +1453,71 @@ object GenericSeriesExtractor {
         return emptyList()
     }
 
+    private fun filterEpisodeOutliers(episodes: List<EpisodeItem>): List<EpisodeItem> {
+        if (episodes.size < 3) return episodes
+        val bySeason = episodes.groupBy { it.season }
+        val filtered = mutableListOf<EpisodeItem>()
+        for ((_, seasonEps) in bySeason) {
+            val sorted = seasonEps.sortedBy { it.number.toIntOrNull() ?: Int.MAX_VALUE }
+            var cutIdx = sorted.size
+            for (i in 1 until sorted.size) {
+                val prev = sorted[i - 1].number.toIntOrNull() ?: continue
+                val curr = sorted[i].number.toIntOrNull() ?: continue
+                val gap = curr - prev
+                val remaining = sorted.size - i
+                if (gap > maxOf(30, i * 2) && remaining <= 2 && prev <= 200) {
+                    cutIdx = i
+                    break
+                }
+            }
+            filtered.addAll(sorted.subList(0, cutIdx))
+        }
+        return filtered.sortedWith(compareBy({ it.season.toIntOrNull() ?: 1 }, { it.number.toIntOrNull() ?: Int.MAX_VALUE }))
+    }
+
+    private fun extractCardText(link: org.jsoup.nodes.Element): String {
+        val ownText = link.text().trim()
+        val attrTitle = link.attr("title").trim()
+        val card = link.closest("article, li, .item, .card, .post, .episode, .ep-item, [class*='episode'], [class*='card']")
+            ?: link.parent()
+        val singleCardLinkText = if (card != null) {
+            val hrefs = card.select("a[href]").map { it.attr("href").trim() }.filter { it.isNotEmpty() }.distinct()
+            if (hrefs.size == 1) card.text().trim() else ""
+        } else {
+            ""
+        }
+        return listOf(ownText, singleCardLinkText, attrTitle)
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString(" ")
+            .trim()
+    }
+
+    private fun stripIsoDates(text: String): String {
+        return text
+            .replace(Regex("\\b(?:19|20)\\d{2}[-/.]\\d{2}[-/.]\\d{2}\\b"), " ")
+            .replace(Regex("\\s{2,}"), " ")
+            .trim()
+    }
+
     private fun parseEpisodeLinks(links: org.jsoup.select.Elements, baseOrigin: String): List<EpisodeItem> {
         val result = mutableListOf<EpisodeItem>()
         for ((idx, link) in links.withIndex()) {
             val href = link.attr("href").trim()
             if (href.isEmpty() || href.startsWith("#") || href.startsWith("javascript")) continue
             val fullHref = DlePlaylistParser.normalizeUrl(href, baseOrigin)
-            val text = link.text().trim()
-            val seasonEp = extractSeasonAndEpisodeFromUrl(fullHref)
+            val cardText = extractCardText(link)
+            val cleanedText = stripIsoDates(cardText)
+            val seasonEp = extractSeasonAndEpisodeFromUrl(fullHref) ?: extractSeasonAndEpisodeFromText(cardText)
             val season = link.attr("data-season").trim().ifEmpty { seasonEp?.first?.toString() ?: "1" }
             val epNum = link.attr("data-episode").trim()
                 .ifEmpty { link.attr("data-ep").trim() }
                 .ifEmpty { link.attr("data-number").trim() }
                 .ifEmpty { seasonEp?.second?.toString() ?: "" }
                 .ifEmpty { extractEpisodeFromUrl(fullHref)?.toString() ?: "" }
-                .ifEmpty { extractEpNumber(text, idx + 1) }
+                .ifEmpty { extractEpNumber(cleanedText, idx + 1) }
 
-            val epTitle = link.attr("title").trim().ifEmpty { text }.ifEmpty { "Episode $epNum" }
+            val epTitle = link.attr("title").trim().ifEmpty { cleanedText }.ifEmpty { "Episode $epNum" }
             result.add(
                 EpisodeItem(
                     id = "ep_s${season}_e${epNum}_$idx",
@@ -1327,22 +1528,25 @@ object GenericSeriesExtractor {
                 )
             )
         }
-        return result
-            .distinctBy { "${it.season}:${it.number}" }
-            .sortedWith(compareBy({ it.season.toIntOrNull() ?: 1 }, { it.number.toIntOrNull() ?: Int.MAX_VALUE }))
+        return filterEpisodeOutliers(
+            result
+                .distinctBy { "${it.season}:${it.number}" }
+                .sortedWith(compareBy({ it.season.toIntOrNull() ?: 1 }, { it.number.toIntOrNull() ?: Int.MAX_VALUE }))
+        )
     }
 
     internal fun buildEpisodeUrlTemplate(url: String): EpisodeUrlTemplate? {
         val clean = url.trim()
         if (clean.isEmpty()) return null
 
-        // 1. /tv/{id}/{season}/{episode} or /embed/tv/{id}/{season}/{episode}
-        val tvMatch = Pattern.compile("^(https?://[^?#]+?/(?:embed/)?tv/[^/]+/)(\\d{1,3})/(\\d{1,4})(.*)$", Pattern.CASE_INSENSITIVE).matcher(clean)
+        // 1. /tv/{id}/{season}/{episode} or /embed/tv/{id}/{season}-{episode}
+        val tvMatch = Pattern.compile("^(https?://[^?#]+?/(?:embed/)?tv/[^/]+/)(\\d{1,3})([/-])(\\d{1,4})(.*)$", Pattern.CASE_INSENSITIVE).matcher(clean)
         if (tvMatch.find()) {
             val prefix = tvMatch.group(1) ?: return null
             val season = tvMatch.group(2)?.toIntOrNull() ?: 1
-            val suffix = tvMatch.group(4) ?: ""
-            return EpisodeUrlTemplate("$prefix{season}/{episode}$suffix", supportsSeason = true, defaultSeason = season)
+            val sep = tvMatch.group(3) ?: "/"
+            val suffix = tvMatch.group(5) ?: ""
+            return EpisodeUrlTemplate("$prefix{season}$sep{episode}$suffix", supportsSeason = true, defaultSeason = season)
         }
 
         // 2. /season-{s}/episode-{e} or /s{s}/e{e}
@@ -1374,8 +1578,20 @@ object GenericSeriesExtractor {
             return EpisodeUrlTemplate("$p1{season}$p2{episode}$suffix", supportsSeason = true, defaultSeason = s)
         }
 
-        // 4. Query parameters ?season=1&episode=1 or ?s=1&e=1
-        val querySeasonEp = Pattern.compile("([?&](?:season|s)=)(\\d{1,3})(&(?:episode|ep|e)=)(\\d{1,4})", Pattern.CASE_INSENSITIVE).matcher(clean)
+        // 3b. {s}x{e} pattern in URL (e.g., /episode/doctor-who-13x1/)
+        val xCompact = Pattern.compile("^(https?://[^?#]*?[^0-9a-zA-Z])(\\d{1,3})(x)(\\d{1,4})((?:$|[^0-9a-zA-Z].*))$", Pattern.CASE_INSENSITIVE).matcher(clean)
+        if (xCompact.find()) {
+            val p1 = xCompact.group(1) ?: return null
+            val s = xCompact.group(2)?.toIntOrNull() ?: 1
+            val p2 = xCompact.group(3) ?: return null
+            val suffix = xCompact.group(5) ?: ""
+            if (s !in RESOLUTION_NUMBERS) {
+                return EpisodeUrlTemplate("$p1{season}$p2{episode}$suffix", supportsSeason = true, defaultSeason = s)
+            }
+        }
+
+        // 4. Query parameters ?season=1&episode=1 or ?s=1&e=1 or ?sea=1&epi=1
+        val querySeasonEp = Pattern.compile("([?&](?:season|sea|s)=)(\\d{1,3})(&(?:episode|epi|ep|e)=)(\\d{1,4})", Pattern.CASE_INSENSITIVE).matcher(clean)
         if (querySeasonEp.find()) {
             val s = querySeasonEp.group(2)?.toIntOrNull() ?: 1
             val replaced = querySeasonEp.replaceFirst("$1{season}$3{episode}")
@@ -1428,16 +1644,23 @@ object GenericSeriesExtractor {
             .toMutableList()
     }
 
+    @Suppress("UNUSED_PARAMETER")
     internal fun extractExpectedEpisodeCount(doc: Document, html: String, structuredCount: Int?): Int? {
         var best = structuredCount?.takeIf { it in 2..2000 } ?: 0
-        val bodyText = doc.body().text()
-        for (sourceText in listOf(bodyText, html)) {
-            val m1 = PAGE_EP_COUNT_PATTERN_1.matcher(sourceText)
+        val cleanDoc = doc.clone()
+        cleanDoc.select(
+            "script, style, noscript, header, nav, footer, aside, .sidebar, #sidebar, " +
+                ".related, .recommended, .similar, .comments, .popular, .trending, .widget, " +
+                "[class*='sidebar'], [class*='related'], [class*='recommend'], [class*='popular'], [class*='trending']"
+        ).remove()
+        val bodyText = cleanDoc.body().text()
+        if (bodyText.isNotEmpty()) {
+            val m1 = PAGE_EP_COUNT_PATTERN_1.matcher(bodyText)
             if (m1.find()) {
                 val n = m1.group(1)?.toIntOrNull() ?: 0
                 if (n in 2..2000) best = maxOf(best, n)
             }
-            val m2 = PAGE_EP_COUNT_PATTERN_2.matcher(sourceText)
+            val m2 = PAGE_EP_COUNT_PATTERN_2.matcher(bodyText)
             if (m2.find()) {
                 val n = m2.group(1)?.toIntOrNull() ?: 0
                 if (n in 2..2000) best = maxOf(best, n)
@@ -1465,28 +1688,56 @@ object GenericSeriesExtractor {
     ): MetadataExpansionResult {
         val existingEpisodes = studios.flatMap { it.players }.flatMap { it.episodes }
         val maxSeenEp = existingEpisodes.mapNotNull { it.number.toIntOrNull() }.maxOrNull() ?: 0
+        val distinctSeasons = existingEpisodes.map { it.season }.distinct()
+        if (distinctSeasons.size > 1) {
+            if (allowExternalApi && client != null) {
+                val backupUrls = buildBackupEmbedSampleUrls(extractTmdbIdFromUrl(cleanUrl), findImdbId(cleanUrl, html))
+                if (backupUrls.isNotEmpty()) {
+                    addTemplateIframePlayersForSeasons(studios, backupUrls)
+                }
+            }
+            splitMultiSeasonStudioIfNeeded(studios)
+            return MetadataExpansionResult()
+        }
+        val hasContiguousSingleSeasonList = existingEpisodes.size >= 2 &&
+            distinctSeasons.size <= 1 &&
+            maxSeenEp == existingEpisodes.size
 
-        var targetCount = maxOf(expectedEpisodeCount ?: 0, if (maxSeenEp > existingEpisodes.size && maxSeenEp <= 2000) maxSeenEp else 0)
+        // Only expand beyond existing episodes if we don't already have an explicit complete contiguous list,
+        // or if expectedEpisodeCount is a structured/reasonable expansion above existingEpisodes.
+        val allowTextOverride = !hasContiguousSingleSeasonList ||
+            (expectedEpisodeCount != null && expectedEpisodeCount in (existingEpisodes.size + 1)..(existingEpisodes.size * 4 + 12))
+        val effectiveExpected = if (allowTextOverride) expectedEpisodeCount else null
+
+        var targetCount = maxOf(
+            effectiveExpected ?: 0,
+            if (maxSeenEp > existingEpisodes.size && maxSeenEp <= 2000) maxSeenEp else 0
+        )
         var tvMazeEpisodes: List<EpisodeItem> = emptyList()
         var fallbackPoster: String? = null
         var fallbackDesc: String? = null
         var fallbackRating: String? = null
 
-        val templateSourceUrl = existingEpisodes.firstOrNull()?.iframeUrl?.takeIf { hasEpisodeInUrl(it) }
+        var resolvedImdbId: String? = findImdbId(cleanUrl, html)
+        val tmdbId = extractTmdbIdFromUrl(cleanUrl)
+
+        val rawTemplateSource = existingEpisodes.firstOrNull()?.iframeUrl?.takeIf { hasEpisodeInUrl(it) }
             ?: cleanUrl.takeIf { hasEpisodeInUrl(it) }
             ?: discoveredIframeUrls.firstOrNull { isTemplateIframeUrl(it) }
-            ?: cleanUrl
 
+        val templateSourceUrl = rawTemplateSource ?: cleanUrl
         val pageTemplate = buildEpisodeUrlTemplate(templateSourceUrl)
 
         if (allowExternalApi && client != null && existingEpisodes.size <= 1 && targetCount <= 1 && hasSeriesIndicators) {
-            val imdbId = findImdbId(cleanUrl, html)
-            val tvMazeResult = fetchTvMazeEpisodes(client, seriesTitle, imdbId, pageTemplate)
+            val tvMazeResult = fetchTvMazeEpisodes(client, seriesTitle, resolvedImdbId, if (rawTemplateSource != null) pageTemplate else null)
             if (tvMazeResult != null) {
                 tvMazeEpisodes = tvMazeResult.episodes
                 fallbackPoster = tvMazeResult.posterUrl
                 fallbackDesc = tvMazeResult.description
                 fallbackRating = tvMazeResult.rating
+                if (resolvedImdbId.isNullOrEmpty()) {
+                    resolvedImdbId = tvMazeResult.imdbId
+                }
             }
             if (tvMazeEpisodes.size <= 1) {
                 val jikanResult = fetchJikanAnimeInfo(client, seriesTitle)
@@ -1501,26 +1752,48 @@ object GenericSeriesExtractor {
             }
         }
 
+        val backupEmbedUrls = if (allowExternalApi) buildBackupEmbedSampleUrls(tmdbId, resolvedImdbId) else emptyList()
+        val combinedIframeUrls = (discoveredIframeUrls + backupEmbedUrls).distinct()
+
         // Apply TVMaze multi-episode metadata if available
         if (tvMazeEpisodes.size > 1 && existingEpisodes.size <= 1) {
-            val targetSeason = extractSeasonAndEpisodeFromUrl(templateSourceUrl)?.first
-                ?: pageTemplate?.defaultSeason
-                ?: 1
-            val filtered = if (pageTemplate != null && !pageTemplate.supportsSeason) {
-                val sEps = tvMazeEpisodes.filter { it.season == targetSeason.toString() }
-                if (sEps.size > 1) sEps else tvMazeEpisodes
+            val primaryBackupTpl = if (rawTemplateSource == null) {
+                backupEmbedUrls.firstOrNull()?.let { buildEpisodeUrlTemplate(it) }
+            } else {
+                null
+            }
+            val preparedEpisodes = if (primaryBackupTpl != null) {
+                tvMazeEpisodes.map { ep ->
+                    val s = ep.season.toIntOrNull() ?: 1
+                    val e = ep.number.toIntOrNull() ?: 1
+                    ep.copy(iframeUrl = primaryBackupTpl.buildUrl(s, e))
+                }
             } else {
                 tvMazeEpisodes
             }
 
+            val explicitSeasonInUrl = extractExplicitSeasonFromUrl(cleanUrl)
+            val filtered = if (hasEpisodeInUrl(cleanUrl) || explicitSeasonInUrl != null) {
+                val targetSeason = explicitSeasonInUrl
+                    ?: extractSeasonAndEpisodeFromUrl(templateSourceUrl)?.first
+                    ?: pageTemplate?.defaultSeason
+                    ?: 1
+                val sEps = preparedEpisodes.filter { it.season == targetSeason.toString() }
+                if (sEps.size > 1) sEps else preparedEpisodes
+            } else {
+                preparedEpisodes
+            }
+
             if (filtered.size > 1) {
-                val mainPlayer = PlayerSource("auto_player", "Плеєр", filtered.toMutableList())
+                val mainPlayerName = if (primaryBackupTpl != null) "Плеєр (Auto)" else "Плеєр"
+                val mainPlayer = PlayerSource("auto_player", mainPlayerName, filtered.toMutableList())
                 if (studios.isEmpty()) {
                     studios.add(DubStudio("auto_studio", "Оригінал", mutableListOf(mainPlayer)))
                 } else {
                     studios[0].players[0].episodes = filtered.toMutableList()
                 }
-                addTemplateIframePlayers(studios, discoveredIframeUrls, filtered)
+                addTemplateIframePlayers(studios, combinedIframeUrls, filtered)
+                splitMultiSeasonStudioIfNeeded(studios)
                 return MetadataExpansionResult(fallbackPoster, fallbackDesc, fallbackRating)
             }
         }
@@ -1534,10 +1807,71 @@ object GenericSeriesExtractor {
             } else {
                 studios[0].players[0].episodes = expanded
             }
-            addTemplateIframePlayers(studios, discoveredIframeUrls, expanded)
+            addTemplateIframePlayers(studios, combinedIframeUrls, expanded)
+        } else if (backupEmbedUrls.isNotEmpty() && existingEpisodes.isNotEmpty()) {
+            addTemplateIframePlayers(studios, backupEmbedUrls, existingEpisodes)
         }
 
+        splitMultiSeasonStudioIfNeeded(studios)
         return MetadataExpansionResult(fallbackPoster, fallbackDesc, fallbackRating)
+    }
+
+    private fun extractExplicitSeasonFromUrl(url: String): Int? {
+        val m = Pattern.compile("(?:season[-_/=?]|/s)(\\d{1,3})(?:$|/|&|-)", Pattern.CASE_INSENSITIVE).matcher(url)
+        return if (m.find()) m.group(1)?.toIntOrNull() else null
+    }
+
+    private fun buildBackupEmbedSampleUrls(tmdbId: String?, imdbId: String?): List<String> {
+        val urls = mutableListOf<String>()
+        if (!tmdbId.isNullOrBlank()) {
+            urls.add("https://vidsrc.buzz/embed/tv/$tmdbId/1/1")
+            urls.add("https://www.2embed.cc/embedtv/$tmdbId&s=1&e=1")
+            urls.add("https://multiembed.mov/?video_id=$tmdbId&tmdb=1&s=1&e=1")
+            urls.add("https://vidsrc.to/embed/tv/$tmdbId/1/1")
+        } else if (!imdbId.isNullOrBlank()) {
+            urls.add("https://vidsrc.buzz/embed/tv/$imdbId/1/1")
+            urls.add("https://www.2embed.cc/embedtv/$imdbId&s=1&e=1")
+            urls.add("https://multiembed.mov/?video_id=$imdbId&s=1&e=1")
+            urls.add("https://vidsrc.to/embed/tv/$imdbId/1/1")
+        }
+        return urls
+    }
+
+    private fun buildBackupMovieEmbedUrls(tmdbId: String?, imdbId: String?): List<String> {
+        val urls = mutableListOf<String>()
+        if (!tmdbId.isNullOrBlank()) {
+            urls.add("https://vidsrc.buzz/embed/movie/$tmdbId")
+            urls.add("https://www.2embed.cc/embed/$tmdbId")
+            urls.add("https://multiembed.mov/?video_id=$tmdbId&tmdb=1")
+        } else if (!imdbId.isNullOrBlank()) {
+            urls.add("https://vidsrc.buzz/embed/movie/$imdbId")
+            urls.add("https://www.2embed.cc/embed/$imdbId")
+            urls.add("https://multiembed.mov/?video_id=$imdbId")
+        }
+        return urls
+    }
+
+    private fun addTemplateIframePlayersForSeasons(
+        studios: MutableList<DubStudio>,
+        sampleEmbedUrls: List<String>
+    ) {
+        for (studio in studios) {
+            val baseEps = studio.players.firstOrNull()?.episodes ?: continue
+            if (baseEps.isEmpty()) continue
+            for ((idx, ifrUrl) in sampleEmbedUrls.withIndex()) {
+                val tpl = buildEpisodeUrlTemplate(ifrUrl) ?: continue
+                val (_, pName) = ExtractorUtils.identifyPlayer(ifrUrl, idx + 1)
+                val epList = baseEps.map { ep ->
+                    val s = ep.season.toIntOrNull() ?: tpl.defaultSeason
+                    val e = ep.number.toIntOrNull() ?: 1
+                    ep.copy(id = "ifr_${idx}_s${s}_e$e", iframeUrl = tpl.buildUrl(s, e))
+                }.toMutableList()
+                val alreadyHas = studio.players.any { it.episodes.firstOrNull()?.iframeUrl == epList.firstOrNull()?.iframeUrl }
+                if (!alreadyHas && epList.isNotEmpty()) {
+                    studio.players.add(PlayerSource("ifr_player_$idx", "$pName (Embed)", epList))
+                }
+            }
+        }
     }
 
     private fun addTemplateIframePlayers(
@@ -1570,7 +1904,8 @@ object GenericSeriesExtractor {
         val episodeCount: Int = 0,
         val posterUrl: String? = null,
         val description: String? = null,
-        val rating: String? = null
+        val rating: String? = null,
+        val imdbId: String? = null
     )
 
     private fun fetchTvMazeEpisodes(
@@ -1654,12 +1989,15 @@ object GenericSeriesExtractor {
             }
             val rating = ratingNum?.let { "★ $it" }
 
+            val resolvedImdbId = imdbId ?: showObj.getAsJsonObjectOrNull("externals")?.getStringOrNull("imdb")
+
             ExternalSeriesMetadata(
                 episodes = eps,
                 episodeCount = eps.size,
                 posterUrl = poster,
                 description = desc,
-                rating = rating
+                rating = rating,
+                imdbId = resolvedImdbId
             )
         } catch (_: Exception) {
             null
@@ -1723,10 +2061,7 @@ object GenericSeriesExtractor {
         expectedCount: Int?
     ): Boolean {
         if (structuredHint || (expectedCount != null && expectedCount > 1)) return true
-        val lowerUrl = cleanUrl.lowercase(Locale.ROOT)
-        if (lowerUrl.contains("/tv/") || lowerUrl.contains("/series/") || lowerUrl.contains("/serial") ||
-            lowerUrl.contains("/anime/") || hasEpisodeInUrl(cleanUrl)
-        ) {
+        if (isSeriesUrlCandidate(cleanUrl)) {
             return true
         }
         val ogType = doc.selectFirst("meta[property='og:type']")?.attr("content")?.lowercase(Locale.ROOT) ?: ""
@@ -1763,7 +2098,15 @@ object GenericSeriesExtractor {
             val e = m2.group(2)?.toIntOrNull()
             if (s != null && e != null) return s to e
         }
-        val qm = Pattern.compile("[?&](?:season|s)=(\\d{1,3}).*?[?&](?:episode|ep|e)=(\\d{1,4})", Pattern.CASE_INSENSITIVE).matcher(url)
+        val mx = SEASON_X_EP_PATTERN.matcher(url)
+        while (mx.find()) {
+            val s = mx.group(1)?.toIntOrNull() ?: continue
+            val e = mx.group(2)?.toIntOrNull() ?: continue
+            if (s in 1..150 && e in 1..2000 && s !in RESOLUTION_NUMBERS) {
+                return s to e
+            }
+        }
+        val qm = Pattern.compile("[?&](?:season|sea|s)=(\\d{1,3}).*?[?&](?:episode|epi|ep|e)=(\\d{1,4})", Pattern.CASE_INSENSITIVE).matcher(url)
         if (qm.find()) {
             val s = qm.group(1)?.toIntOrNull()
             val e = qm.group(2)?.toIntOrNull()
@@ -1772,15 +2115,201 @@ object GenericSeriesExtractor {
         return null
     }
 
+    private fun extractSeasonAndEpisodeFromText(text: String): Pair<Int, Int>? {
+        val mx = SEASON_X_EP_PATTERN.matcher(text)
+        while (mx.find()) {
+            val s = mx.group(1)?.toIntOrNull() ?: continue
+            val e = mx.group(2)?.toIntOrNull() ?: continue
+            if (s in 1..150 && e in 1..2000 && s !in RESOLUTION_NUMBERS) {
+                return s to e
+            }
+        }
+        val m2 = S_E_COMPACT_PATTERN.matcher(text)
+        if (m2.find()) {
+            val s = m2.group(1)?.toIntOrNull()
+            val e = m2.group(2)?.toIntOrNull()
+            if (s != null && e != null && s in 1..150 && e in 1..2000) return s to e
+        }
+        return null
+    }
+
+    private fun fetchAdditionalSeasonsIfAvailable(
+        client: OkHttpClient,
+        doc: Document,
+        html: String,
+        cleanUrl: String,
+        baseOrigin: String,
+        studios: MutableList<DubStudio>
+    ) {
+        val existingEpisodes = studios.flatMap { it.players }.flatMap { it.episodes }
+        val existingSeasons = existingEpisodes.map { it.season }.distinct()
+        if (existingSeasons.size > 1) return
+
+        val seasonTargets = linkedMapOf<Int, String>()
+
+        // 1. Season switcher <select> ("Select Seasons" / season dropdowns)
+        for (sel in doc.select("select")) {
+            val meta = (sel.id() + " " + sel.attr("name") + " " + sel.className() + " " + sel.attr("aria-label")).lowercase(Locale.ROOT)
+            val opts = sel.select("option")
+            val isSeasonSelect = meta.contains("season") || meta.contains("сезон") ||
+                opts.count { SEASON_TAB_TEXT_PATTERN.matcher(it.text().trim()).matches() } >= 2
+            if (!isSeasonSelect || opts.size < 2) continue
+
+            for (opt in opts) {
+                val sNum = extractSeasonNumber(opt.text().trim())?.toIntOrNull() ?: continue
+                val valAttr = opt.attr("value").trim().ifEmpty { opt.attr("data-url").trim() }
+                if (valAttr.startsWith("http") || valAttr.startsWith("/") || valAttr.startsWith("//")) {
+                    val full = DlePlaylistParser.normalizeUrl(valAttr, baseOrigin)
+                    if (full != cleanUrl && isSameSiteHost(cleanUrl, full)) {
+                        seasonTargets[sNum] = full
+                    }
+                }
+            }
+        }
+
+        // 2. Explicit Season links ("Season 1", "Season 2", ... tabs/pagination)
+        if (seasonTargets.isEmpty()) {
+            for (link in doc.select("a[href]")) {
+                val text = link.text().trim()
+                val m = SEASON_TAB_TEXT_PATTERN.matcher(text)
+                if (!m.find()) continue
+                val sNum = m.group(1)?.toIntOrNull() ?: continue
+                val href = link.attr("href").trim()
+                if (href.isEmpty() || href.startsWith("#") || href.startsWith("javascript")) continue
+                val full = DlePlaylistParser.normalizeUrl(href, baseOrigin)
+                if (full != cleanUrl && isSameSiteHost(cleanUrl, full)) {
+                    seasonTargets[sNum] = full
+                }
+            }
+        }
+
+        val collectedBySeason = mutableListOf<EpisodeItem>()
+        collectedBySeason.addAll(existingEpisodes)
+
+        if (seasonTargets.isNotEmpty()) {
+            for ((sNum, targetUrl) in seasonTargets.entries.sortedBy { it.key }.take(20)) {
+                val sHtml = fetchHtmlWithReferer(client, targetUrl, cleanUrl) ?: continue
+                val sDoc = Jsoup.parse(sHtml, targetUrl)
+                val sStudios = parseDomEpisodes(sDoc, targetUrl, baseOrigin)
+                val sEps = sStudios.flatMap { it.players }.flatMap { it.episodes }
+                    .map { ep -> if (ep.season == "1" && sNum > 1) ep.copy(season = sNum.toString()) else ep }
+                collectedBySeason.addAll(sEps)
+            }
+        } else {
+            // 3. WordPress Toroflix / DooPlay AJAX season switching (admin-ajax.php)
+            val ajaxPostId = doc.selectFirst("[data-post], [data-post-id], #wp-admin-ajax")
+                ?.let { it.attr("data-post").ifEmpty { it.attr("data-post-id") } }
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+            val ajaxSeasons = linkedSetOf<Int>()
+            for (el in doc.select("[data-season]")) {
+                val sNum = el.attr("data-season").trim().toIntOrNull() ?: continue
+                if (sNum in 1..150) ajaxSeasons.add(sNum)
+            }
+            for (sel in doc.select("select")) {
+                if (sel.select("option").count { SEASON_TAB_TEXT_PATTERN.matcher(it.text().trim()).matches() } >= 2) {
+                    for (opt in sel.select("option")) {
+                        val sNum = extractSeasonNumber(opt.text().trim())?.toIntOrNull() ?: continue
+                        if (sNum in 1..150) ajaxSeasons.add(sNum)
+                    }
+                }
+            }
+            val currentSeasonsSet = existingEpisodes.mapNotNull { it.season.toIntOrNull() }.toSet()
+            val missingAjaxSeasons = ajaxSeasons.filter { it !in currentSeasonsSet }
+            val wpAjaxAction = when {
+                html.contains("action_select_season", ignoreCase = true) -> "action_select_season"
+                html.contains("tr_select_season", ignoreCase = true) -> "tr_select_season"
+                else -> null
+            }
+
+            if (!ajaxPostId.isNullOrEmpty() && wpAjaxAction != null && missingAjaxSeasons.isNotEmpty() && baseOrigin.isNotEmpty()) {
+                val ajaxEndpoint = "$baseOrigin/wp-admin/admin-ajax.php"
+                for (sNum in missingAjaxSeasons.sorted().take(20)) {
+                    try {
+                        val form = okhttp3.FormBody.Builder()
+                            .add("action", wpAjaxAction)
+                            .add("season", sNum.toString())
+                            .add("post", ajaxPostId)
+                            .build()
+                        val req = Request.Builder()
+                            .url(ajaxEndpoint)
+                            .post(form)
+                            .header("User-Agent", ExtractorUtils.DEFAULT_UA)
+                            .header("Referer", cleanUrl)
+                            .header("X-Requested-With", "XMLHttpRequest")
+                            .build()
+                        val respHtml = ExtractorUtils.executeForString(client, req) ?: continue
+                        if (respHtml.isBlank()) continue
+                        val sDoc = Jsoup.parse("<html><body>$respHtml</body></html>", cleanUrl)
+                        val sEps = parseEpisodeLinks(sDoc.select("a[href]"), baseOrigin)
+                            .map { ep -> if (ep.season == "1" && sNum > 1) ep.copy(season = sNum.toString()) else ep }
+                        collectedBySeason.addAll(sEps)
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        val merged = collectedBySeason
+            .distinctBy { "${it.season}:${it.number}" }
+            .sortedWith(compareBy({ it.season.toIntOrNull() ?: 1 }, { it.number.toIntOrNull() ?: Int.MAX_VALUE }))
+
+        if (merged.size > existingEpisodes.size) {
+            if (studios.isEmpty()) {
+                studios.add(DubStudio("dom_seasons_studio", "Оригінал", mutableListOf(PlayerSource("dom_seasons_player", "Плеєр", merged.toMutableList()))))
+            } else {
+                studios[0].players[0].episodes = merged.toMutableList()
+            }
+        }
+    }
+
+    internal fun splitMultiSeasonStudioIfNeeded(studios: MutableList<DubStudio>) {
+        if (studios.size != 1) return
+        val onlyStudio = studios[0]
+        if (onlyStudio.players.isEmpty()) return
+        val distinctSeasons = onlyStudio.players
+            .flatMap { it.episodes }
+            .map { it.season }
+            .distinct()
+        if (distinctSeasons.size <= 1) return
+
+        val sortedSeasons = distinctSeasons.sortedBy { it.toIntOrNull() ?: Int.MAX_VALUE }
+        val originalPlayers = onlyStudio.players.toList()
+
+        studios.clear()
+        for (s in sortedSeasons) {
+            val seasonPlayers = mutableListOf<PlayerSource>()
+            for (p in originalPlayers) {
+                val seasonEps = p.episodes
+                    .filter { it.season == s }
+                    .sortedBy { it.number.toIntOrNull() ?: Int.MAX_VALUE }
+                    .toMutableList()
+                if (seasonEps.isNotEmpty()) {
+                    seasonPlayers.add(PlayerSource("${p.id}_s$s", p.name, seasonEps))
+                }
+            }
+            if (seasonPlayers.isNotEmpty()) {
+                studios.add(
+                    DubStudio(
+                        id = "season_studio_$s",
+                        name = "Сезон $s",
+                        players = seasonPlayers
+                    )
+                )
+            }
+        }
+    }
+
     private fun extractEpisodeFromUrl(url: String): Int? {
         val m = EPISODE_URL_PATTERN.matcher(url)
         return if (m.find()) m.group(1)?.toIntOrNull() else null
     }
 
     private fun extractEpNumber(text: String, fallback: Int): String {
-        val m = EPISODE_TEXT_PATTERN.matcher(text)
+        val cleaned = stripIsoDates(text)
+        extractSeasonAndEpisodeFromText(cleaned)?.let { return it.second.toString() }
+        val m = EPISODE_TEXT_PATTERN.matcher(cleaned)
         if (m.find()) return m.group(1) ?: fallback.toString()
-        val numM = Pattern.compile("(\\d{1,4})").matcher(text)
+        val numM = Pattern.compile("(\\d{1,4})").matcher(cleaned)
         return if (numM.find()) numM.group(1) ?: fallback.toString() else fallback.toString()
     }
 

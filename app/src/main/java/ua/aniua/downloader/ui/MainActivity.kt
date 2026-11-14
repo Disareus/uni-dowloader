@@ -16,6 +16,7 @@ import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -40,6 +41,7 @@ import ua.aniua.downloader.databinding.DialogAddShortcutBinding
 import ua.aniua.downloader.extractor.ExtractorRouter
 import ua.aniua.downloader.extractor.ExtractorUtils
 import ua.aniua.downloader.extractor.GenericPlayerResolver
+import ua.aniua.downloader.extractor.WebViewStreamResolver
 import ua.aniua.downloader.model.DownloadTask
 import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
@@ -70,6 +72,8 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     private var currentPlayer: PlayerSource? = null
     private var allSelected = false
     private var isDescExpanded = false
+
+    private val interceptedBrowserMediaUrls = java.util.Collections.synchronizedList(mutableListOf<String>())
 
     private val urlInTextPattern = Pattern.compile("https?://\\S+")
 
@@ -223,11 +227,15 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun openShortcutInBrowser(shortcut: SiteShortcut) {
+        openBrowserUrl(shortcut.url, shortcut.name)
+    }
+
+    private fun openBrowserUrl(url: String, title: String? = null) {
         binding.scrollDownloader.visibility = View.GONE
         binding.cardBottomDownloadBar.visibility = View.GONE
         binding.layoutBrowser.visibility = View.VISIBLE
-        binding.toolbar.title = shortcut.name
-        binding.webviewShortcut.loadUrl(shortcut.url)
+        binding.toolbar.title = title ?: url
+        binding.webviewShortcut.loadUrl(url)
     }
 
     private fun closeBrowser() {
@@ -253,8 +261,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
             useWideViewPort = true
             loadWithOverviewMode = true
             cacheMode = WebSettings.LOAD_DEFAULT
-            userAgentString =
-                "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+            userAgentString = ExtractorUtils.DEFAULT_UA
         }
 
         webView.webChromeClient = object : WebChromeClient() {
@@ -273,13 +280,23 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
                 return false
             }
 
+            override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
+                val reqUrl = request?.url?.toString()
+                if (WebViewStreamResolver.isInterceptableMediaUrl(reqUrl) && reqUrl != null && !interceptedBrowserMediaUrls.contains(reqUrl)) {
+                    interceptedBrowserMediaUrls.add(reqUrl)
+                }
+                return null
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                interceptedBrowserMediaUrls.clear()
                 binding.swipeRefreshCatalog.isRefreshing = true
                 binding.progressWebLoader.visibility = View.VISIBLE
                 updateWebNavButtons()
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
+                CookieManager.getInstance().flush()
                 binding.swipeRefreshCatalog.isRefreshing = false
                 binding.progressWebLoader.visibility = View.GONE
                 updateWebNavButtons()
@@ -312,7 +329,11 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         binding.btnWebDownloadCurrent.setOnClickListener {
             val currentUrl = webView.url
             if (currentUrl != null && (currentUrl.startsWith("http://") || currentUrl.startsWith("https://"))) {
-                openDownloadMenu(currentUrl)
+                webView.evaluateJavascript("(function(){return document.documentElement ? document.documentElement.outerHTML : '';})();") { rawHtml ->
+                    CookieManager.getInstance().flush()
+                    val html = WebViewStreamResolver.unescapeEvalResult(rawHtml).takeIf { it.isNotBlank() }
+                    openDownloadMenu(currentUrl, html)
+                }
             }
         }
 
@@ -328,10 +349,10 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         binding.btnWebForward.alpha = if (canForward) 1.0f else 0.35f
     }
 
-    private fun openDownloadMenu(url: String) {
+    private fun openDownloadMenu(url: String, preloadedHtml: String? = null) {
         closeBrowser()
         binding.etUrl.setText(url)
-        startAnalyze(url)
+        startAnalyze(url, preloadedHtml)
     }
 
     private fun performSecurityAuditAsync() {
@@ -450,15 +471,63 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         imm.hideSoftInputFromWindow(binding.etUrl.windowToken, 0)
     }
 
-    private fun startAnalyze(url: String) {
+    private fun startAnalyze(url: String, preloadedHtml: String? = null) {
         binding.btnAnalyze.isEnabled = false
         binding.progressAnalyze.visibility = View.VISIBLE
 
         lifecycleScope.launch {
             try {
-                val info = withContext(Dispatchers.IO) {
-                    ExtractorRouter.analyzeUrl(httpClient, url)
+                var info = withContext(Dispatchers.IO) {
+                    ExtractorRouter.analyzeUrl(httpClient, url, preloadedHtml)
                 }
+
+                val allEpsBefore = info.studios.flatMap { it.players }.flatMap { it.episodes }
+                val needsWebViewFallback = preloadedHtml == null && (
+                    allEpsBefore.size <= 1 && (
+                        info.title == "Онлайн Відео" ||
+                            allEpsBefore.firstOrNull()?.iframeUrl == info.url ||
+                            allEpsBefore.firstOrNull()?.iframeUrl.isNullOrEmpty()
+                        )
+                    )
+
+                if (needsWebViewFallback) {
+                    val rendered = WebViewStreamResolver.fetchRenderedHtml(this@MainActivity, url)
+                    if (isFinishing || isDestroyed) return@launch
+
+                    val reanalyzed = if (rendered.html.isNotBlank() && !rendered.isChallengePage) {
+                        withContext(Dispatchers.IO) {
+                            ExtractorRouter.analyzeUrl(httpClient, rendered.finalUrl.ifBlank { url }, rendered.html)
+                        }
+                    } else {
+                        null
+                    }
+
+                    val reanalyzedEpsCount = reanalyzed?.studios?.flatMap { it.players }?.sumOf { it.episodes.size } ?: 0
+                    if (reanalyzed != null && (reanalyzedEpsCount > 1 || reanalyzed.title != "Онлайн Відео")) {
+                        info = reanalyzed
+                    } else if (rendered.interceptedMediaUrls.isNotEmpty()) {
+                        val fallbackEp = info.studios.firstOrNull()?.players?.firstOrNull()?.episodes?.firstOrNull()
+                        if (fallbackEp != null && !ExtractorUtils.isDirectMediaUrl(fallbackEp.iframeUrl)) {
+                            fallbackEp.iframeUrl = rendered.interceptedMediaUrls.first()
+                        }
+                    } else if (rendered.isChallengePage && allEpsBefore.size <= 1) {
+                        binding.btnAnalyze.isEnabled = true
+                        binding.progressAnalyze.visibility = View.GONE
+                        openBrowserUrl(url, info.title.takeIf { it != "Онлайн Відео" } ?: url)
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Сайт потребує перевірки у браузері. Зачекайте завантаження сторінки та натисніть кнопку скачування внизу.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        return@launch
+                    }
+                } else if (preloadedHtml != null && interceptedBrowserMediaUrls.isNotEmpty()) {
+                    val singleEp = allEpsBefore.singleOrNull()
+                    if (singleEp != null && singleEp.iframeUrl == info.url) {
+                        singleEp.iframeUrl = interceptedBrowserMediaUrls.first()
+                    }
+                }
+
                 binding.btnAnalyze.isEnabled = true
                 binding.progressAnalyze.visibility = View.GONE
                 displayMediaInfo(info)
@@ -617,16 +686,37 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         }
     }
 
+    private fun collectCandidatePlayerUrls(episode: EpisodeItem): List<String> {
+        val candidateUrls = mutableListOf<String>()
+        if (episode.iframeUrl.isNotBlank()) {
+            candidateUrls.add(episode.iframeUrl)
+        }
+        val extraPlayers = currentStudio?.players.orEmpty()
+        for (ps in extraPlayers) {
+            if (ps.id == currentPlayer?.id) continue
+            val matching = ps.episodes.firstOrNull { it.season == episode.season && it.number == episode.number }
+            if (matching != null && matching.iframeUrl.isNotBlank() && !candidateUrls.contains(matching.iframeUrl)) {
+                candidateUrls.add(matching.iframeUrl)
+            }
+        }
+        return candidateUrls
+    }
+
     override fun onPlayPreview(episode: EpisodeItem) {
         val title = if (currentMediaInfo?.isSeries == true) {
             "${currentMediaInfo?.title ?: ""} - Серія ${episode.number}"
         } else {
             currentMediaInfo?.title ?: "Відео"
         }
+        val candidates = collectCandidatePlayerUrls(episode)
+        val fallbackUrls = candidates.filter { it != episode.iframeUrl }
         val intent = Intent(this, PlayerActivity::class.java).apply {
             putExtra(PlayerActivity.EXTRA_VIDEO_URL, episode.iframeUrl)
             putExtra(PlayerActivity.EXTRA_TITLE, title)
-            putExtra(PlayerActivity.EXTRA_REFERER, episode.iframeUrl)
+            putExtra(PlayerActivity.EXTRA_REFERER, currentMediaInfo?.url ?: episode.iframeUrl)
+            if (fallbackUrls.isNotEmpty()) {
+                putStringArrayListExtra(PlayerActivity.EXTRA_FALLBACK_URLS, ArrayList(fallbackUrls))
+            }
         }
         startActivity(intent)
     }
@@ -731,7 +821,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         }
     }
 
-    private fun buildDownloadTask(
+    private suspend fun buildDownloadTask(
         episode: EpisodeItem,
         mediaTitle: String,
         studioName: String,
@@ -740,10 +830,26 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         format: String,
         folderName: String
     ): DownloadTask {
-        val streams = GenericPlayerResolver.resolvePlayerStreams(httpClient, episode.iframeUrl, episode.iframeUrl)
-        val chosenStream = if (streams.isNotEmpty()) ExtractorUtils.selectBestStream(streams, quality) else null
-        val streamUrl = chosenStream?.url ?: episode.iframeUrl
-        val referer = chosenStream?.headers?.get("Referer") ?: episode.iframeUrl
+        val pageReferer = currentMediaInfo?.url ?: episode.iframeUrl
+        val candidateUrls = collectCandidatePlayerUrls(episode)
+
+        var chosenStream: ua.aniua.downloader.model.StreamQuality? = null
+        var chosenTargetUrl = episode.iframeUrl
+
+        for (targetUrl in candidateUrls) {
+            var streams = GenericPlayerResolver.resolvePlayerStreams(httpClient, targetUrl, pageReferer)
+            if (streams.isEmpty() && !ExtractorUtils.isDirectMediaUrl(targetUrl)) {
+                streams = WebViewStreamResolver.resolveStreamViaWebView(this@MainActivity, targetUrl, pageReferer)
+            }
+            if (streams.isNotEmpty()) {
+                chosenStream = ExtractorUtils.selectBestStream(streams, quality)
+                chosenTargetUrl = targetUrl
+                break
+            }
+        }
+
+        val streamUrl = chosenStream?.url ?: chosenTargetUrl
+        val referer = chosenStream?.headers?.get("Referer") ?: pageReferer
 
         return DownloadTask(
             id = UUID.randomUUID().toString(),
@@ -751,7 +857,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
             studioName = studioName,
             episodeNumber = if (isSingle) "1" else episode.number,
             episodeTitle = episode.title,
-            iframeUrl = episode.iframeUrl,
+            iframeUrl = chosenTargetUrl,
             streamUrl = streamUrl,
             referer = referer,
             quality = quality,

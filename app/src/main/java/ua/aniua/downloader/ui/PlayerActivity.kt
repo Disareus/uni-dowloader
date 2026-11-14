@@ -1,7 +1,15 @@
 package ua.aniua.downloader.ui
 
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.View
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
@@ -24,6 +32,8 @@ import kotlinx.coroutines.withContext
 import ua.aniua.downloader.databinding.ActivityPlayerBinding
 import ua.aniua.downloader.extractor.ExtractorUtils
 import ua.aniua.downloader.extractor.GenericPlayerResolver
+import ua.aniua.downloader.extractor.WebViewStreamResolver
+import ua.aniua.downloader.model.StreamQuality
 import ua.security.network.NetworkSecurityManager
 
 class PlayerActivity : AppCompatActivity() {
@@ -32,6 +42,7 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_VIDEO_URL = "extra_video_url"
         const val EXTRA_REFERER = "extra_referer"
         const val EXTRA_TITLE = "extra_title"
+        const val EXTRA_FALLBACK_URLS = "extra_fallback_urls"
     }
 
     private lateinit var binding: ActivityPlayerBinding
@@ -55,8 +66,13 @@ class PlayerActivity : AppCompatActivity() {
 
         val rawUrl = intent.getStringExtra(EXTRA_VIDEO_URL)
         val referer = intent.getStringExtra(EXTRA_REFERER)
+        val fallbackUrls = intent.getStringArrayListExtra(EXTRA_FALLBACK_URLS).orEmpty()
+        val candidateUrls = (listOfNotNull(rawUrl) + fallbackUrls)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
 
-        if (rawUrl.isNullOrEmpty()) {
+        if (candidateUrls.isEmpty()) {
             Toast.makeText(this, "Посилання на відео відсутнє", Toast.LENGTH_SHORT).show()
             finish()
             return
@@ -65,24 +81,116 @@ class PlayerActivity : AppCompatActivity() {
         binding.playerLoading.visibility = View.VISIBLE
 
         lifecycleScope.launch {
-            val resolvedStream = withContext(Dispatchers.IO) {
-                if (ExtractorUtils.isDirectMediaUrl(rawUrl)) {
-                    rawUrl to referer
-                } else {
-                    val client = NetworkSecurityManager.getInstance(this@PlayerActivity).hardenedHttpClient
-                    val streams = GenericPlayerResolver.resolvePlayerStreams(client, rawUrl, referer)
-                    if (streams.isNotEmpty()) {
-                        val best = streams.first()
-                        best.url to (best.headers["Referer"] ?: referer)
+            var resolvedStream = withContext(Dispatchers.IO) {
+                val client = NetworkSecurityManager.getInstance(this@PlayerActivity).hardenedHttpClient
+                var found: StreamQuality? = null
+                for (candidate in candidateUrls) {
+                    found = if (ExtractorUtils.isDirectMediaUrl(candidate)) {
+                        StreamQuality("Auto", 720, candidate, ExtractorUtils.isHlsUrl(candidate)).apply {
+                            if (!referer.isNullOrEmpty()) headers["Referer"] = referer
+                        }
                     } else {
-                        rawUrl to referer
+                        GenericPlayerResolver.resolvePlayerStreams(client, candidate, referer).firstOrNull()
                     }
+                    if (found != null) break
+                }
+                found
+            }
+
+            if (resolvedStream == null) {
+                for (candidate in candidateUrls) {
+                    if (ExtractorUtils.isDirectMediaUrl(candidate)) continue
+                    resolvedStream = WebViewStreamResolver.resolveStreamViaWebView(this@PlayerActivity, candidate, referer).firstOrNull()
+                    if (resolvedStream != null) break
                 }
             }
 
             if (isFinishing || isDestroyed) return@launch
-            initPlayer(resolvedStream.first, resolvedStream.second)
+            if (resolvedStream == null) {
+                val webCandidates = candidateUrls.filter {
+                    it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
+                }
+                if (webCandidates.isNotEmpty()) {
+                    initWebPlayerFallback(webCandidates, referer)
+                } else {
+                    binding.playerLoading.visibility = View.GONE
+                    Toast.makeText(
+                        this@PlayerActivity,
+                        "Не вдалося знайти відеопотік у плеєрі",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    finish()
+                }
+                return@launch
+            }
+            val effectiveReferer = resolvedStream.headers["Referer"] ?: referer
+            initPlayer(resolvedStream.url, effectiveReferer, resolvedStream.headers, resolvedStream.isHls)
         }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun initWebPlayerFallback(urls: List<String>, referer: String?) {
+        binding.playerView.visibility = View.GONE
+        binding.playerWebview.visibility = View.VISIBLE
+        binding.layoutPlayerTopBar.visibility = View.VISIBLE
+
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(binding.playerWebview, true)
+        }
+
+        binding.playerWebview.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            databaseEnabled = true
+            mediaPlaybackRequiresUserGesture = false
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            userAgentString = ExtractorUtils.DEFAULT_UA
+        }
+
+        var currentIdx = 0
+        fun loadCandidateAt(idx: Int) {
+            val targetUrl = urls[idx]
+            if (!referer.isNullOrBlank()) {
+                binding.playerWebview.loadUrl(targetUrl, mapOf("Referer" to referer))
+            } else {
+                binding.playerWebview.loadUrl(targetUrl)
+            }
+        }
+
+        binding.playerWebview.webChromeClient = WebChromeClient()
+        binding.playerWebview.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView?, loadedUrl: String?) {
+                if (loadedUrl != "about:blank") {
+                    binding.playerLoading.visibility = View.GONE
+                }
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                if (request?.isForMainFrame == true) {
+                    currentIdx++
+                    if (currentIdx < urls.size) {
+                        view?.loadUrl("about:blank")
+                        view?.post { loadCandidateAt(currentIdx) }
+                    } else {
+                        binding.playerLoading.visibility = View.GONE
+                        view?.loadUrl("about:blank")
+                        Toast.makeText(
+                            this@PlayerActivity,
+                            "Не вдалося завантажити веб-плеєр",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+        }
+
+        loadCandidateAt(0)
     }
 
     private fun enableImmersiveMode() {
@@ -92,9 +200,17 @@ class PlayerActivity : AppCompatActivity() {
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 
-    private fun initPlayer(url: String, referer: String?) {
+    private fun initPlayer(
+        url: String,
+        referer: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
+        isHlsHint: Boolean = false
+    ) {
         val cleanUrl = url.substringBefore("#")
         val headers = ExtractorUtils.buildStreamHeaders(cleanUrl, referer)
+        for ((k, v) in extraHeaders) {
+            if (v.isNotEmpty()) headers[k] = v
+        }
 
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
             .setDefaultRequestProperties(headers)
@@ -102,7 +218,8 @@ class PlayerActivity : AppCompatActivity() {
         val dataSourceFactory = DefaultDataSource.Factory(this, httpDataSourceFactory)
 
         val mediaItem = MediaItem.fromUri(cleanUrl)
-        val mediaSource: MediaSource = if (cleanUrl.contains(".m3u8", ignoreCase = true)) {
+        val isHls = isHlsHint || ExtractorUtils.isHlsUrl(cleanUrl)
+        val mediaSource: MediaSource = if (isHls) {
             HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
         } else {
             ProgressiveMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
@@ -127,14 +244,21 @@ class PlayerActivity : AppCompatActivity() {
         binding.playerView.player = player
     }
 
+    override fun onResume() {
+        super.onResume()
+        binding.playerWebview.onResume()
+    }
+
     override fun onStop() {
         super.onStop()
         player?.pause()
+        binding.playerWebview.onPause()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         player?.release()
         player = null
+        binding.playerWebview.destroy()
     }
 }

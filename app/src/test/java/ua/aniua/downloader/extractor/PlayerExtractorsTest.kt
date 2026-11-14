@@ -1,5 +1,6 @@
 package ua.aniua.downloader.extractor
 
+import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -403,6 +404,280 @@ class PlayerExtractorsTest {
 
         val normalized = GenericPlayerResolver.normalizeEscapedUrls(unpacked)
         assertTrue("Normalized JS should unescape slashes, got: $normalized", normalized.contains("https://cdn.stream/hls/master.m3u8"))
+    }
+
+    @Test
+    fun testGenericSeriesIgnoresSidebarTrendingAndNoisyTextCounts() {
+        val html = """
+            <html>
+            <head><title>Cyberpunk Edgerunners</title></head>
+            <body>
+                <div class="episode-list">
+                    <a href="/watch/cyberpunk-episode-1">Ep 1</a>
+                    <a href="/watch/cyberpunk-episode-2">Ep 2</a>
+                    <a href="/watch/cyberpunk-episode-3">Ep 3</a>
+                    <a href="/watch/cyberpunk-episode-4">Ep 4</a>
+                    <a href="/watch/cyberpunk-episode-5">Ep 5</a>
+                    <a href="/watch/cyberpunk-episode-6">Ep 6</a>
+                    <a href="/watch/cyberpunk-episode-7">Ep 7</a>
+                    <a href="/watch/cyberpunk-episode-8">Ep 8</a>
+                    <a href="/watch/cyberpunk-episode-9">Ep 9</a>
+                    <a href="/watch/cyberpunk-episode-10">Ep 10</a>
+                    <a href="/watch/cyberpunk-episode-11">Ep 11</a>
+                    <a href="/watch/cyberpunk-episode-12">Ep 12</a>
+                </div>
+                <aside class="sidebar">
+                    <a href="/watch/one-piece-episode-1120">Episode 1120</a>
+                </aside>
+                <footer>Total Episodes: 1200 across catalog</footer>
+                <script id="__NEXT_DATA__" type="application/json">
+                {
+                  "props": {
+                    "pageProps": {
+                      "trending": [
+                        {"title": "One Piece", "latestEpisode": 1120, "totalEpisodes": 1120}
+                      ]
+                    }
+                  }
+                }
+                </script>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val info = GenericSeriesExtractor.parseDocumentOffline("https://aniwatch.example/watch/cyberpunk-episode-1", html)
+        assertTrue(info.isSeries)
+        val eps = info.studios.first().players.first().episodes
+        assertEquals(12, eps.size)
+        assertEquals("12", eps.last().number)
+    }
+
+    @Test
+    fun testGenericPlayerResolverExtractsQuotedJsonDoublePackedAtobAndProtocolRelative() {
+        val jsonHtml = """
+            <script>
+              const cfg = {"sources": [{"file": "//cdn.usvideo.net/hls/ep1/master.m3u8", "label": "1080p"}]};
+            </script>
+        """.trimIndent()
+        val jsonStreams = GenericPlayerResolver.extractDirectStreamsFromHtml(jsonHtml, "https://player.usvideo.net/embed/1")
+        assertEquals(1, jsonStreams.size)
+        assertEquals("https://cdn.usvideo.net/hls/ep1/master.m3u8", jsonStreams[0].url)
+        assertTrue(jsonStreams[0].isHls)
+
+        val doublePacked = "eval(function(p,a,c,k,e,d){return p}(\"0=\\\"1://2.3/4.5\\\";\",6,6,\"src|https|cdn|box|v|m3u8\".split(\"|\"),0,{}))"
+        val doubleStreams = GenericPlayerResolver.extractDirectStreamsFromHtml(doublePacked, "https://box.example/e/1")
+        assertEquals(1, doubleStreams.size)
+        assertEquals("https://cdn.box/v.m3u8", doubleStreams[0].url)
+
+        val encodedUrl = java.util.Base64.getEncoder().encodeToString("https://stream.example.org/ep2/index.m3u8".toByteArray())
+        val atobHtml = "<script>const s = atob('$encodedUrl');</script>"
+        val atobStreams = GenericPlayerResolver.extractDirectStreamsFromHtml(atobHtml, "https://example.org/watch/2")
+        assertEquals(1, atobStreams.size)
+        assertEquals("https://stream.example.org/ep2/index.m3u8", atobStreams[0].url)
+
+        val headers = ExtractorUtils.buildStreamHeaders("https://cdn.example.org/video.m3u8", "https://player.example.org/embed/123")
+        assertEquals("https://player.example.org/embed/123", headers["Referer"])
+        assertEquals("https://player.example.org", headers["Origin"])
+    }
+
+    @Test
+    fun testGenericSeriesFmoviesSeasonXEpisodeCardsAndMultiSeasonSplitting() {
+        val html = """
+            <html>
+            <head><title>Watch Doctor Who Online</title></head>
+            <body>
+                <select id="season-select">
+                    <option value="">Select Seasons</option>
+                    <option value="/serie/57243/doctor-who/?season=1">Season 1</option>
+                    <option value="/serie/57243/doctor-who/?season=13" selected>Season 13</option>
+                </select>
+                <div class="cards-grid">
+                    <a href="/episode/rose-slug-1x1/"><span>1x1</span> Rose (1x1)</a>
+                    <a href="/episode/the-end-of-the-world-1x2/"><span>1x2</span> The End of the World (1x2)</a>
+                    <a href="/episode/the-halloween-apocalypse-13x1/"><span>13x1</span> The Halloween Apocalypse (13x1)</a>
+                    <a href="/episode/war-of-the-sontarans-13x2/"><span>13x2</span> War of the Sontarans (13x2)</a>
+                    <a href="/episode/once-upon-time-13x3/"><span>13x3</span> Once, Upon Time (13x3)</a>
+                    <a href="/episode/village-of-the-angels-13x4/"><span>13x4</span> Village of the Angels (13x4)</a>
+                    <a href="/episode/survivors-of-the-flux-13x5/"><span>13x5</span> Survivors of the Flux (13x5)</a>
+                    <a href="/episode/the-vanquishers-13x6/"><span>13x6</span> The Vanquishers (13x6)</a>
+                </div>
+                <div class="season-tabs">
+                    <a href="/serie/57243/doctor-who/?season=1">Season 1</a>
+                    <a href="/serie/57243/doctor-who/?season=13">Season 13</a>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val info = GenericSeriesExtractor.parseDocumentOffline("https://fmovieszflix.com/serie/57243/doctor-who/", html)
+        assertTrue(info.isSeries)
+        assertEquals(2, info.studios.size)
+        assertEquals("Сезон 1", info.studios[0].name)
+        assertEquals(2, info.studios[0].players.first().episodes.size)
+        assertEquals("Сезон 13", info.studios[1].name)
+        assertEquals(6, info.studios[1].players.first().episodes.size)
+        assertEquals("13", info.studios[1].players.first().episodes[0].season)
+        assertEquals("1", info.studios[1].players.first().episodes[0].number)
+        assertEquals("6", info.studios[1].players.first().episodes[5].number)
+
+        val tpl = GenericSeriesExtractor.buildEpisodeUrlTemplate("https://fmovieszflix.com/episode/doctor-who-13x1/")
+        assertNotNull(tpl)
+        assertTrue(tpl!!.supportsSeason)
+        assertEquals("https://fmovieszflix.com/episode/doctor-who-13x4/", tpl.buildUrl(13, 4))
+    }
+
+    @Test
+    fun testUrlSlugTitleTmdbExtractionAndBlockedPageFallback() {
+        val url = "https://fmovieszflix.com/serie/57243/doctor-who/"
+        assertEquals("Doctor Who", GenericSeriesExtractor.extractTitleFromUrlSlug(url))
+        assertEquals("57243", GenericSeriesExtractor.extractTmdbIdFromUrl(url))
+
+        val cfHtml = "<html><head><title>Just a moment...</title></head><body><script src='https://challenges.cloudflare.com/turnstile/v0/api.js'></script></body></html>"
+        assertTrue(GenericSeriesExtractor.isChallengeOrBlockedHtml(cfHtml))
+
+        val offlineInfo = GenericSeriesExtractor.parseDocumentOffline(url, cfHtml)
+        assertEquals("Doctor Who", offlineInfo.title)
+        assertTrue(offlineInfo.isSeries)
+        val epsCount = offlineInfo.studios.first().players.first().episodes.size
+        assertEquals(1, epsCount)
+    }
+
+    @Test
+    fun testFmoviesCardContainerSiblingTextAndDateStripping() {
+        val html = """
+            <html>
+            <head><title>Doctor Who</title></head>
+            <body>
+                <div class="episodes-grid">
+                    <article class="card">
+                        <a href="/episode/the-halloween-apocalypse/"></a>
+                        <span class="badge">13x1</span>
+                        <h3>The Halloween Apocalypse (13x1)</h3>
+                        <span class="date">2021-10-31</span>
+                    </article>
+                    <article class="card">
+                        <a href="/episode/war-of-the-sontarans/"></a>
+                        <span class="badge">13x2</span>
+                        <h3>War of the Sontarans (13x2)</h3>
+                        <span class="date">2021-11-07</span>
+                    </article>
+                    <article class="card">
+                        <a href="/episode/once-upon-time/"></a>
+                        <span class="badge">13x3</span>
+                        <h3>Once, Upon Time (13x3)</h3>
+                        <span class="date">2021-11-14</span>
+                    </article>
+                    <article class="card">
+                        <a href="/episode/village-of-the-angels/"></a>
+                        <span class="badge">13x4</span>
+                        <h3>Village of the Angels (13x4)</h3>
+                        <span class="date">2021-11-21</span>
+                    </article>
+                    <article class="card">
+                        <a href="/episode/survivors-of-the-flux/"></a>
+                        <span class="badge">13x5</span>
+                        <h3>Survivors of the Flux (13x5)</h3>
+                        <span class="date">2021-11-28</span>
+                    </article>
+                    <article class="card">
+                        <a href="/episode/the-vanquishers/"></a>
+                        <span class="badge">13x6</span>
+                        <h3>The Vanquishers (13x6)</h3>
+                        <span class="date">2021-12-05</span>
+                    </article>
+                </div>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val info = GenericSeriesExtractor.parseDocumentOffline("https://fmovieszflix.com/serie/57243/doctor-who/", html)
+        assertTrue(info.isSeries)
+        val eps = info.studios.first().players.first().episodes
+        assertEquals(6, eps.size)
+        assertEquals("13", eps[0].season)
+        assertEquals("1", eps[0].number)
+        assertEquals("6", eps[5].number)
+        assertTrue(!eps[0].title.contains("2021-10-31"))
+    }
+
+    @Test
+    fun testMultiSeasonJsonArrayPreservesAllSeasonsAndSplitsStudios() {
+        val html = """
+            <html>
+            <head><title>Doctor Who</title></head>
+            <body>
+                <script id="__NEXT_DATA__" type="application/json">
+                {
+                  "props": {
+                    "pageProps": {
+                      "seasons": [
+                        {
+                          "season_number": 1,
+                          "episodes": [
+                            {"number": 1, "title": "Rose", "url": "/episode/rose"},
+                            {"number": 2, "title": "The End of the World", "url": "/episode/end-of-world"}
+                          ]
+                        },
+                        {
+                          "season_number": 13,
+                          "episodes": [
+                            {"number": 1, "title": "The Halloween Apocalypse", "url": "/episode/halloween"},
+                            {"number": 2, "title": "War of the Sontarans", "url": "/episode/sontarans"}
+                          ]
+                        }
+                      ]
+                    }
+                  }
+                }
+                </script>
+            </body>
+            </html>
+        """.trimIndent()
+
+        val info = GenericSeriesExtractor.parseDocumentOffline("https://fmovieszflix.com/serie/57243/doctor-who/", html)
+        assertTrue(info.isSeries)
+        assertEquals(2, info.studios.size)
+        assertEquals("Сезон 1", info.studios[0].name)
+        assertEquals(2, info.studios[0].players.first().episodes.size)
+        assertEquals("Сезон 13", info.studios[1].name)
+        assertEquals(2, info.studios[1].players.first().episodes.size)
+    }
+
+    @Test
+    fun testVidsrcBuzzConfigIframeFallbackAndHlsDetection() {
+        val embedHtml = """
+            <html><body>
+                <iframe id="iframesrc" src="about:blank" data-src="https://vidsrc.buzz/embed/tv/57243/1/1"></iframe>
+            </body></html>
+        """.trimIndent()
+        val doc = Jsoup.parse(embedHtml, "https://www.2embed.cc/")
+        val ifr = doc.selectFirst("iframe")!!
+        assertEquals("https://vidsrc.buzz/embed/tv/57243/1/1", GenericPlayerResolver.extractIframeSrc(ifr))
+
+        val buzzHtml = """
+            <script>
+              var Q = {"type":"tv","id":"tt0436992","s":1,"e":1,"t":"tok123","ssr":{"status":"ok","servers":[{"ref":"ref123","name":"Server VNH"}]},"emb":"<iframe src=\"https:\/\/vidsrc.buzz\/embed\/tv\/tt0436992\/1\/1\"><\/iframe>"};
+            </script>
+        """.trimIndent()
+        val cfg = GenericPlayerResolver.parseVidsrcBuzzConfig(buzzHtml)
+        assertNotNull(cfg)
+        assertEquals("tok123", cfg!!.get("t").asString)
+        assertEquals("ref123", cfg.getAsJsonObject("ssr").getAsJsonArray("servers")[0].asJsonObject.get("ref").asString)
+
+        val streamUrl = "https://vidsrc.buzz/_stream?id=3de2ffcb47cc23ff08e4b64ae6660bbf"
+        assertTrue(ExtractorUtils.isHlsUrl(streamUrl))
+        assertTrue(ExtractorUtils.isDirectMediaUrl(streamUrl))
+        assertTrue(ExtractorUtils.isHlsUrl("https://cdn.example.org/hls/master.m3u8?token=1"))
+
+        val buzzTpl = GenericSeriesExtractor.buildEpisodeUrlTemplate("https://vidsrc.buzz/embed/tv/57243/1/1")
+        assertNotNull(buzzTpl)
+        assertTrue(buzzTpl!!.supportsSeason)
+        assertEquals("https://vidsrc.buzz/embed/tv/57243/13/4", buzzTpl.buildUrl(13, 4))
+
+        val twoEmbedTpl = GenericSeriesExtractor.buildEpisodeUrlTemplate("https://www.2embed.cc/embedtv/57243&s=1&e=1")
+        assertNotNull(twoEmbedTpl)
+        assertTrue(twoEmbedTpl!!.supportsSeason)
+        assertEquals("https://www.2embed.cc/embedtv/57243&s=13&e=4", twoEmbedTpl.buildUrl(13, 4))
     }
 }
 

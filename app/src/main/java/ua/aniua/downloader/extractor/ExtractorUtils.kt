@@ -42,9 +42,28 @@ internal object ExtractorUtils {
         }
     }
 
-    fun executeForString(client: OkHttpClient, request: Request): String? {
+    fun getCookieHeader(url: String?): String? {
+        if (url.isNullOrBlank()) return null
         return try {
-            client.newCall(request).execute().use { response ->
+            android.webkit.CookieManager.getInstance().getCookie(url)?.takeIf { it.isNotBlank() }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    fun executeForString(client: OkHttpClient, request: Request): String? {
+        val finalRequest = if (request.header("Cookie") == null) {
+            val cookie = getCookieHeader(request.url.toString())
+            if (!cookie.isNullOrBlank()) {
+                request.newBuilder().header("Cookie", cookie).build()
+            } else {
+                request
+            }
+        } else {
+            request
+        }
+        return try {
+            client.newCall(finalRequest).execute().use { response ->
                 if (!response.isSuccessful) return null
                 response.body?.string()
             }
@@ -53,14 +72,25 @@ internal object ExtractorUtils {
         }
     }
 
+    fun isHlsUrl(url: String): Boolean {
+        val lower = url.lowercase(Locale.ROOT)
+        val pathPart = lower.substringBefore("?").substringBefore("#")
+        return pathPart.endsWith(".m3u8") ||
+            lower.contains(".m3u8") ||
+            lower.contains("/_stream?id=") ||
+            lower.contains("type=hls") ||
+            lower.endsWith("#hls")
+    }
+
     fun isDirectMediaUrl(url: String): Boolean {
         val lower = url.lowercase(Locale.ROOT)
         if (lower.startsWith("content://") || lower.startsWith("file://")) return true
+        if (isHlsUrl(url)) return true
         val pathPart = lower.substringBefore("?").substringBefore("#")
-        if (pathPart.endsWith(".m3u8") || pathPart.endsWith(".mp4") || pathPart.endsWith(".webm")) {
+        if (pathPart.endsWith(".mp4") || pathPart.endsWith(".webm")) {
             return true
         }
-        if (lower.contains(".m3u8") || lower.contains(".mp4")) return true
+        if (lower.contains(".mp4")) return true
         return DIRECT_MEDIA_HOST_HINTS.any { lower.contains(it) }
     }
 
@@ -99,6 +129,10 @@ internal object ExtractorUtils {
             lower.contains("ustore") -> "ustore" to "Ustore"
             lower.contains("alloha") -> "alloha" to "Alloha"
             lower.contains("collaps") -> "collaps" to "Collaps"
+            lower.contains("vidsrc.buzz") -> "vidsrc_buzz" to "VidSrc"
+            lower.contains("2embed") -> "2embed" to "2Embed"
+            lower.contains("multiembed") || lower.contains("streamingnow") -> "multiembed" to "MultiEmbed"
+            lower.contains("vidsrc") -> "vidsrc" to "VidSrc"
             else -> {
                 val label = if (fallbackIndex != null) "Плеєр $fallbackIndex" else "Плеєр"
                 "player" to label
@@ -118,6 +152,15 @@ internal object ExtractorUtils {
             headers["Origin"] = "https://fenixplay.xyz"
         } else if (lowerUrl.contains("moon") || lowerRef.contains("moon")) {
             headers["Origin"] = "https://moonanime.net"
+        } else if (!referer.isNullOrEmpty()) {
+            val origin = extractBaseOrigin(referer, "")
+            if (origin.isNotEmpty()) {
+                headers["Origin"] = origin
+            }
+        }
+        val cookie = getCookieHeader(streamUrl) ?: getCookieHeader(referer)
+        if (!cookie.isNullOrBlank()) {
+            headers["Cookie"] = cookie
         }
         return headers
     }

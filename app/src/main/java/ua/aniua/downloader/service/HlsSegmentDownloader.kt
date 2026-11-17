@@ -9,6 +9,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import ua.aniua.downloader.extractor.ExtractorUtils
 import ua.aniua.downloader.extractor.GenericPlayerResolver
+import ua.aniua.downloader.extractor.YouTubeExtractor
 import ua.aniua.downloader.model.DownloadState
 import ua.aniua.downloader.model.DownloadTask
 import java.io.BufferedReader
@@ -16,21 +17,31 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.io.OutputStream
+import java.io.RandomAccessFile
 import java.net.URI
 import java.nio.ByteBuffer
 import java.util.Locale
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.min
 
 object HlsSegmentDownloader {
 
     private const val PROGRESS_THROTTLE_MS = 300L
     private const val SEGMENT_MAX_RETRIES = 3
+    private const val YT_RANGE_CHUNK_BYTES = 2L * 1024L * 1024L
+    private const val YT_PARALLEL_WORKERS = 4
+
+    private val CONTENT_RANGE_TOTAL_PATTERN = Pattern.compile("bytes\\s+\\d+-\\d+/(\\d+)", Pattern.CASE_INSENSITIVE)
 
     private val KEY_PATTERN = Pattern.compile("METHOD=([^,\\s]+)")
     private val URI_PATTERN = Pattern.compile("URI=[\"']([^\"']+)[\"']")
@@ -55,18 +66,28 @@ object HlsSegmentDownloader {
 
         // 1. Отримуємо прямий потік відео (m3u8 або mp4) через GenericPlayerResolver
         var streamUrl = task.streamUrl
+        var audioUrl = task.audioUrl
         var referer = task.referer.ifEmpty { task.iframeUrl }
+        var extraHeaders: Map<String, String> = task.headers
+
+        fun applyBestQuality(best: ua.aniua.downloader.model.StreamQuality) {
+            streamUrl = best.url
+            audioUrl = best.audioUrl
+            referer = best.headers["Referer"] ?: task.iframeUrl
+            extraHeaders = best.headers.toMap()
+            task.streamUrl = streamUrl
+            task.audioUrl = audioUrl
+            task.referer = referer
+            task.headers.clear()
+            task.headers.putAll(best.headers)
+        }
 
         fun resolveFreshStream() {
             val resolved = GenericPlayerResolver.resolvePlayerStreams(client, task.iframeUrl, referer)
             if (resolved.isEmpty()) {
                 throw IllegalStateException("Не вдалося отримати потік відео з плеєра: ${task.iframeUrl}")
             }
-            val best = ExtractorUtils.selectBestStream(resolved, task.quality)
-            streamUrl = best.url
-            referer = best.headers["Referer"] ?: task.iframeUrl
-            task.streamUrl = streamUrl
-            task.referer = referer
+            applyBestQuality(ExtractorUtils.selectBestStream(resolved, task.quality))
         }
 
         if (streamUrl.isEmpty() || !ExtractorUtils.isDirectMediaUrl(streamUrl)) {
@@ -77,26 +98,74 @@ object HlsSegmentDownloader {
             task.iframeUrl != streamUrl &&
             !ExtractorUtils.isDirectMediaUrl(task.iframeUrl)
 
-        if (ExtractorUtils.isHlsUrl(streamUrl)) {
+        run {
             try {
-                downloadHlsStream(context, client, streamUrl, referer, task.quality, outputStream, listener, isCancelled)
+                executeStreamDownload(
+                    context, client, streamUrl, audioUrl, referer, extraHeaders,
+                    task.quality, outputStream, listener, isCancelled
+                )
             } catch (e: Exception) {
-                val isInitialPlaylistFailure = e.message?.let {
-                    it.contains("HLS m3u8") || it.contains("Порожній m3u8") || it.contains("медіа-плейлиста HLS")
-                } == true
-                if (isCancelled?.get() != true && canRetryFresh && isInitialPlaylistFailure) {
-                    resolveFreshStream()
-                    if (ExtractorUtils.isHlsUrl(streamUrl)) {
-                        downloadHlsStream(context, client, streamUrl, referer, task.quality, outputStream, listener, isCancelled)
+                if (isCancelled?.get() == true) throw e
+
+                val isYouTube = YouTubeExtractor.isYouTubeUrl(task.iframeUrl) ||
+                    streamUrl.contains("googlevideo.com", ignoreCase = true)
+                val msg = e.message.orEmpty()
+                val isYouTubeBlocked = isYouTube && (msg.contains("403") || msg.contains("410") || msg.contains("404"))
+                val isInitialPlaylistFailure = msg.contains("HLS m3u8") ||
+                    msg.contains("Порожній m3u8") ||
+                    msg.contains("медіа-плейлиста HLS")
+
+                if (isYouTubeBlocked) {
+                    YouTubeExtractor.invalidateCache(task.iframeUrl)
+                    val fallbacks = YouTubeExtractor.resolveFallbackStreams(client, task.iframeUrl)
+                    val targetHeight = ExtractorUtils.extractQualityHeight(task.quality) ?: 720
+                    val eligibleFallbacks = if (targetHeight > 360) {
+                        fallbacks.filter { it.height > 360 || it.isHls }
                     } else {
-                        downloadDirectFile(client, streamUrl, referer, outputStream, listener, isCancelled)
+                        fallbacks
                     }
+                    val orderedFallbacks = eligibleFallbacks.sortedWith(
+                        compareBy<ua.aniua.downloader.model.StreamQuality> { it.url == streamUrl && it.audioUrl == audioUrl }
+                            .thenBy { abs((if (it.height > 0) it.height else 720) - targetHeight) }
+                            .thenBy {
+                                when {
+                                    it.audioUrl != null && !it.isHls -> 0
+                                    it.isHls -> 1
+                                    else -> 2
+                                }
+                            }
+                    )
+                    var lastErr: Exception = e
+                    for (fb in orderedFallbacks) {
+                        if (fb.url == streamUrl && fb.audioUrl == audioUrl) continue
+                        applyBestQuality(fb)
+                        try {
+                            executeStreamDownload(
+                                context, client, streamUrl, audioUrl, referer, extraHeaders,
+                                task.quality, outputStream, listener, isCancelled
+                            )
+                            return@run
+                        } catch (retryErr: Exception) {
+                            lastErr = retryErr
+                        }
+                    }
+                    if (targetHeight > 360) {
+                        throw IllegalStateException(
+                            "Не вдалося завантажити у ${task.quality}: потік вищої якості недоступний (${lastErr.message ?: "403"})",
+                            lastErr
+                        )
+                    }
+                    throw lastErr
+                } else if (canRetryFresh && isInitialPlaylistFailure) {
+                    resolveFreshStream()
+                    executeStreamDownload(
+                        context, client, streamUrl, audioUrl, referer, extraHeaders,
+                        task.quality, outputStream, listener, isCancelled
+                    )
                 } else {
                     throw e
                 }
             }
-        } else {
-            downloadDirectFile(client, streamUrl, referer, outputStream, listener, isCancelled)
         }
 
         if (isCancelled?.get() == true) {
@@ -107,27 +176,298 @@ object HlsSegmentDownloader {
         }
     }
 
-    private fun buildRequestWithHeaders(url: String, referer: String?): Request {
+    private fun executeStreamDownload(
+        context: Context,
+        client: OkHttpClient,
+        streamUrl: String,
+        audioUrl: String?,
+        referer: String?,
+        extraHeaders: Map<String, String>,
+        desiredQuality: String,
+        outputStream: OutputStream,
+        listener: DownloadProgressListener?,
+        isCancelled: AtomicBoolean?
+    ) {
+        if (ExtractorUtils.isHlsUrl(streamUrl)) {
+            downloadHlsStream(context, client, streamUrl, referer, extraHeaders, desiredQuality, outputStream, listener, isCancelled)
+        } else if (!audioUrl.isNullOrEmpty()) {
+            downloadMuxedDirectStreams(context, client, streamUrl, audioUrl, referer, extraHeaders, outputStream, listener, isCancelled)
+        } else {
+            downloadDirectFile(client, streamUrl, referer, extraHeaders, outputStream, listener, isCancelled)
+        }
+    }
+
+    internal fun parseContentRangeTotal(contentRange: String?): Long? {
+        if (contentRange.isNullOrBlank()) return null
+        val m = CONTENT_RANGE_TOTAL_PATTERN.matcher(contentRange.trim())
+        return if (m.find()) m.group(1)?.toLongOrNull()?.takeIf { it > 0L } else null
+    }
+
+    private fun buildRequestWithHeaders(
+        url: String,
+        referer: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
+        rangeHeader: String? = null
+    ): Request {
         val builder = Request.Builder().url(url)
-        for ((k, v) in ExtractorUtils.buildStreamHeaders(url, referer)) {
+        val merged = ExtractorUtils.buildStreamHeaders(url, referer)
+        for ((k, v) in extraHeaders) {
+            if (v.isNotEmpty() && !(k.equals("Referer", ignoreCase = true) && url.contains("googlevideo.com", ignoreCase = true))) {
+                merged[k] = v
+            }
+        }
+        for ((k, v) in merged) {
             builder.header(k, v)
         }
+        if (!rangeHeader.isNullOrEmpty()) {
+            builder.header("Range", rangeHeader)
+        }
         return builder.build()
+    }
+
+    private fun downloadMuxedDirectStreams(
+        context: Context,
+        client: OkHttpClient,
+        videoUrl: String,
+        audioUrl: String,
+        referer: String?,
+        extraHeaders: Map<String, String>,
+        out: OutputStream,
+        listener: DownloadProgressListener?,
+        isCancelled: AtomicBoolean?
+    ) {
+        val ts = System.currentTimeMillis()
+        val tempVideoFile = File(context.cacheDir, "yt_video_$ts.mp4")
+        val tempAudioFile = File(context.cacheDir, "yt_audio_$ts.mp4")
+        try {
+            downloadDirectToFile(client, videoUrl, referer, extraHeaders, tempVideoFile, listener, isCancelled, progressWeight = 0.75f, baseProgress = 0f)
+            if (isCancelled?.get() == true) return
+
+            downloadDirectToFile(client, audioUrl, referer, extraHeaders, tempAudioFile, listener, isCancelled, progressWeight = 0.20f, baseProgress = 75f)
+            if (isCancelled?.get() == true) return
+
+            listener?.onProgress(95f, "", "Об'єднання відео та аудіо...", 0L, 0L)
+            muxVideoAndAudio(tempVideoFile, tempAudioFile, out)
+            listener?.onProgress(100f, "", "Завершено", 0L, 0L)
+        } finally {
+            tempVideoFile.delete()
+            tempAudioFile.delete()
+        }
+    }
+
+    /**
+     * Завантажує файл у локальний File; для googlevideo.com використовує 2 МБ Range-чанки
+     * у кілька потоків, щоб обійти обмеження швидкості одиночного GET на YouTube.
+     */
+    private fun downloadDirectToFile(
+        client: OkHttpClient,
+        url: String,
+        referer: String?,
+        extraHeaders: Map<String, String>,
+        targetFile: File,
+        listener: DownloadProgressListener?,
+        isCancelled: AtomicBoolean?,
+        progressWeight: Float,
+        baseProgress: Float
+    ) {
+        if (!url.contains("googlevideo.com", ignoreCase = true)) {
+            FileOutputStream(targetFile).use { fileOut ->
+                downloadDirectFile(client, url, referer, extraHeaders, fileOut, listener, isCancelled, progressWeight, baseProgress)
+            }
+            return
+        }
+
+        val startTime = System.currentTimeMillis()
+        val lastUpdate = AtomicLong(0L)
+        val totalDownloaded = AtomicLong(0L)
+
+        fun reportProgress(totalBytes: Long, force: Boolean = false) {
+            val now = System.currentTimeMillis()
+            val prev = lastUpdate.get()
+            if (!force && now - prev < PROGRESS_THROTTLE_MS) return
+            if (!force && !lastUpdate.compareAndSet(prev, now)) return
+            val dl = totalDownloaded.get()
+            val localPct = if (totalBytes > 0L) (dl * 100f / totalBytes).coerceIn(0f, 100f) else 0f
+            val pct = baseProgress + (localPct * progressWeight)
+            val elapsedSec = max((now - startTime) / 1000.0, 0.1)
+            val speedBytesPerSec = dl / elapsedSec
+            val speedStr = formatSpeed(speedBytesPerSec)
+            val etaStr = if (totalBytes > 0L) formatEta(((totalBytes - dl).coerceAtLeast(0L) / max(speedBytesPerSec, 1.0)).toLong()) else ""
+            listener?.onProgress(pct, speedStr, etaStr, dl, totalBytes)
+        }
+
+        val firstEnd = YT_RANGE_CHUNK_BYTES - 1L
+        val probeRequest = buildRequestWithHeaders(url, referer, extraHeaders, "bytes=0-$firstEnd")
+        var totalBytes = -1L
+
+        RandomAccessFile(targetFile, "rw").use { raf ->
+            val rafLock = Any()
+
+            client.newCall(probeRequest).execute().use { response ->
+                if (!response.isSuccessful || response.body == null) {
+                    throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
+                }
+                val contentType = response.header("Content-Type")?.lowercase(Locale.ROOT).orEmpty()
+                if (contentType.startsWith("image/") || contentType.startsWith("text/")) {
+                    throw IllegalStateException("Отримано не відео ($contentType) замість відеофайлу")
+                }
+
+                val contentTotal = if (response.code == 206) parseContentRangeTotal(response.header("Content-Range")) else null
+                if (contentTotal == null) {
+                    val streamTotal = response.body?.contentLength() ?: 0L
+                    val buf = ByteArray(64 * 1024)
+                    var n: Int
+                    var pos = 0L
+                    response.body?.byteStream()?.use { input ->
+                        while (input.read(buf).also { n = it } != -1) {
+                            if (isCancelled?.get() == true) break
+                            raf.write(buf, 0, n)
+                            pos += n
+                            totalDownloaded.set(pos)
+                            reportProgress(streamTotal)
+                        }
+                    }
+                    if (isCancelled?.get() != true && pos == 0L) {
+                        throw IllegalStateException("Отримано порожній відеофайл")
+                    }
+                    return
+                }
+
+                totalBytes = contentTotal
+                raf.setLength(totalBytes)
+                val buf = ByteArray(64 * 1024)
+                var n: Int
+                var pos = 0L
+                response.body?.byteStream()?.use { input ->
+                    while (input.read(buf).also { n = it } != -1) {
+                        if (isCancelled?.get() == true) break
+                        synchronized(rafLock) {
+                            raf.seek(pos)
+                            raf.write(buf, 0, n)
+                        }
+                        pos += n
+                        totalDownloaded.addAndGet(n.toLong())
+                        reportProgress(totalBytes)
+                    }
+                }
+            }
+
+            if (isCancelled?.get() == true) return
+            val downloadedSoFar = totalDownloaded.get()
+            if (downloadedSoFar >= totalBytes) {
+                reportProgress(totalBytes, force = true)
+                return
+            }
+
+            val chunkRanges = mutableListOf<Pair<Long, Long>>()
+            var cursor = downloadedSoFar
+            while (cursor < totalBytes) {
+                val end = min(cursor + YT_RANGE_CHUNK_BYTES - 1L, totalBytes - 1L)
+                chunkRanges.add(cursor to end)
+                cursor = end + 1L
+            }
+
+            val pool = Executors.newFixedThreadPool(min(YT_PARALLEL_WORKERS, chunkRanges.size.coerceAtLeast(1)))
+            val firstError = AtomicReference<Exception?>(null)
+            val futures = mutableListOf<Future<*>>()
+
+            try {
+                for ((rangeStart, rangeEnd) in chunkRanges) {
+                    futures.add(pool.submit {
+                        if (isCancelled?.get() == true || firstError.get() != null) return@submit
+                        var chunkErr: Exception? = null
+                        for (attempt in 1..SEGMENT_MAX_RETRIES) {
+                            if (isCancelled?.get() == true || firstError.get() != null) return@submit
+                            var offsetInChunk = 0L
+                            try {
+                                val reqStart = rangeStart
+                                val req = buildRequestWithHeaders(url, referer, extraHeaders, "bytes=$reqStart-$rangeEnd")
+                                client.newCall(req).execute().use { resp ->
+                                    if (!resp.isSuccessful || resp.body == null) {
+                                        throw IllegalStateException("HTTP помилка ${resp.code} при завантаженні чанка")
+                                    }
+                                    val buf = ByteArray(64 * 1024)
+                                    var n: Int
+                                    resp.body?.byteStream()?.use { input ->
+                                        while (input.read(buf).also { n = it } != -1) {
+                                            if (isCancelled?.get() == true || firstError.get() != null) break
+                                            val writeAt = reqStart + offsetInChunk
+                                            synchronized(rafLock) {
+                                                raf.seek(writeAt)
+                                                raf.write(buf, 0, n)
+                                            }
+                                            offsetInChunk += n
+                                            totalDownloaded.addAndGet(n.toLong())
+                                            reportProgress(totalBytes)
+                                        }
+                                    }
+                                }
+                                val expected = rangeEnd - rangeStart + 1L
+                                if (isCancelled?.get() != true && firstError.get() == null && offsetInChunk < expected) {
+                                    throw IllegalStateException("Неповний чанк ($offsetInChunk/$expected)")
+                                }
+                                chunkErr = null
+                                break
+                            } catch (e: Exception) {
+                                if (offsetInChunk > 0L) {
+                                    totalDownloaded.addAndGet(-offsetInChunk)
+                                }
+                                chunkErr = e
+                                if (attempt < SEGMENT_MAX_RETRIES && isCancelled?.get() != true && firstError.get() == null) {
+                                    try {
+                                        Thread.sleep(200L * attempt)
+                                    } catch (_: InterruptedException) {
+                                        return@submit
+                                    }
+                                }
+                            }
+                        }
+                        if (chunkErr != null) {
+                            firstError.compareAndSet(null, chunkErr)
+                        }
+                    })
+                }
+                for (f in futures) {
+                    if (isCancelled?.get() == true) break
+                    f.get()
+                }
+            } finally {
+                pool.shutdownNow()
+            }
+
+            firstError.get()?.let { throw it }
+            if (isCancelled?.get() != true && totalDownloaded.get() < totalBytes) {
+                throw IllegalStateException("Неповне завантаження (${totalDownloaded.get()}/$totalBytes)")
+            }
+            reportProgress(totalBytes, force = true)
+        }
     }
 
     private fun downloadDirectFile(
         client: OkHttpClient,
         url: String,
         referer: String?,
+        extraHeaders: Map<String, String>,
         out: OutputStream,
         listener: DownloadProgressListener?,
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        progressWeight: Float = 1.0f,
+        baseProgress: Float = 0f
     ) {
-        val request = buildRequestWithHeaders(url, referer)
+        if (url.contains("googlevideo.com", ignoreCase = true)) {
+            downloadDirectRangeStream(client, url, referer, extraHeaders, out, listener, isCancelled, progressWeight, baseProgress)
+            return
+        }
+
+        val request = buildRequestWithHeaders(url, referer, extraHeaders)
 
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful || response.body == null) {
                 throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
+            }
+            val contentType = response.header("Content-Type")?.lowercase(Locale.ROOT).orEmpty()
+            if (contentType.startsWith("image/") || contentType.startsWith("text/")) {
+                throw IllegalStateException("Отримано не відео ($contentType) замість відеофайлу")
             }
 
             val totalBytes = response.body?.contentLength() ?: 0L
@@ -148,7 +488,8 @@ object HlsSegmentDownloader {
                     val now = System.currentTimeMillis()
                     if (now - lastUpdate >= PROGRESS_THROTTLE_MS) {
                         lastUpdate = now
-                        val pct = if (totalBytes > 0) (downloaded * 100f / totalBytes) else 0f
+                        val localPct = if (totalBytes > 0) (downloaded * 100f / totalBytes) else 0f
+                        val pct = baseProgress + (localPct * progressWeight)
                         val elapsedSec = max((now - startTime) / 1000.0, 0.1)
                         val speedBytesPerSec = downloaded / elapsedSec
                         val speedStr = formatSpeed(speedBytesPerSec)
@@ -166,23 +507,106 @@ object HlsSegmentDownloader {
         }
     }
 
+    private fun downloadDirectRangeStream(
+        client: OkHttpClient,
+        url: String,
+        referer: String?,
+        extraHeaders: Map<String, String>,
+        out: OutputStream,
+        listener: DownloadProgressListener?,
+        isCancelled: AtomicBoolean?,
+        progressWeight: Float,
+        baseProgress: Float
+    ) {
+        val startTime = System.currentTimeMillis()
+        var lastUpdate = 0L
+        var downloaded = 0L
+        var totalBytes = 0L
+        val buffer = ByteArray(64 * 1024)
+
+        var offset = 0L
+        while (true) {
+            if (isCancelled?.get() == true) break
+            val end = if (totalBytes > 0L) {
+                min(offset + YT_RANGE_CHUNK_BYTES - 1L, totalBytes - 1L)
+            } else {
+                offset + YT_RANGE_CHUNK_BYTES - 1L
+            }
+            val request = buildRequestWithHeaders(url, referer, extraHeaders, "bytes=$offset-$end")
+            var isChunkedRange = false
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful || response.body == null) {
+                    throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
+                }
+                val contentType = response.header("Content-Type")?.lowercase(Locale.ROOT).orEmpty()
+                if (contentType.startsWith("image/") || contentType.startsWith("text/")) {
+                    throw IllegalStateException("Отримано не відео ($contentType) замість відеофайлу")
+                }
+
+                if (offset == 0L) {
+                    val crTotal = if (response.code == 206) parseContentRangeTotal(response.header("Content-Range")) else null
+                    if (crTotal != null) {
+                        totalBytes = crTotal
+                        isChunkedRange = true
+                    } else {
+                        totalBytes = response.body?.contentLength() ?: 0L
+                    }
+                } else {
+                    isChunkedRange = response.code == 206
+                }
+
+                var bytesRead: Int
+                response.body?.byteStream()?.use { input ->
+                    while (input.read(buffer).also { bytesRead = it } != -1) {
+                        if (isCancelled?.get() == true) break
+                        out.write(buffer, 0, bytesRead)
+                        downloaded += bytesRead
+                        offset += bytesRead
+
+                        val now = System.currentTimeMillis()
+                        if (now - lastUpdate >= PROGRESS_THROTTLE_MS) {
+                            lastUpdate = now
+                            val localPct = if (totalBytes > 0L) (downloaded * 100f / totalBytes) else 0f
+                            val pct = baseProgress + (localPct * progressWeight)
+                            val elapsedSec = max((now - startTime) / 1000.0, 0.1)
+                            val speedBytesPerSec = downloaded / elapsedSec
+                            val speedStr = formatSpeed(speedBytesPerSec)
+                            val etaStr = if (totalBytes > 0L) formatEta(((totalBytes - downloaded) / max(speedBytesPerSec, 1.0)).toLong()) else ""
+                            listener?.onProgress(pct, speedStr, etaStr, downloaded, totalBytes)
+                        }
+                    }
+                }
+            }
+
+            if (!isChunkedRange || totalBytes <= 0L || offset >= totalBytes) {
+                break
+            }
+        }
+        out.flush()
+        if (isCancelled?.get() != true && downloaded == 0L) {
+            throw IllegalStateException("Отримано порожній відеофайл")
+        }
+    }
+
     private fun downloadHlsStream(
         context: Context,
         client: OkHttpClient,
         m3u8Url: String,
         referer: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
         desiredQuality: String,
         out: OutputStream,
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?
     ) {
-        val cleanM3u8Url = m3u8Url.substringBefore("#")
+        val cleanM3u8Url = ExtractorUtils.stripFragmentHint(m3u8Url)
         val baseUri = URI(cleanM3u8Url)
         var currentPlaylistUrl = cleanM3u8Url
         var audioPlaylistUrl: String? = null
 
         // 1. Завантажуємо первинний плейлист
-        val req = buildRequestWithHeaders(currentPlaylistUrl, referer)
+        val req = buildRequestWithHeaders(currentPlaylistUrl, referer, extraHeaders)
         val content = client.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful || resp.body == null) {
                 throw IllegalStateException("Помилка завантаження HLS m3u8 (${resp.code})")
@@ -192,39 +616,87 @@ object HlsSegmentDownloader {
 
         // 2. Якщо це Master Playlist, обираємо найкращий варіант відео та аудіо-потік
         if (content.contains("#EXT-X-STREAM-INF")) {
-            val audioMatcher = AUDIO_PATTERN.matcher(content)
-            if (audioMatcher.find()) {
-                val rawAudio = audioMatcher.group(1) ?: ""
-                audioPlaylistUrl = if (rawAudio.startsWith("http")) rawAudio else baseUri.resolve(rawAudio).toString()
-            }
-
-            val qualityHint = if (m3u8Url.contains("#")) m3u8Url.substringAfter("#") else desiredQuality
-            val targetHeight = qualityHint.filter { it.isDigit() }.toIntOrNull() ?: 1080
+            val fragmentHint = if (cleanM3u8Url != m3u8Url.trim()) m3u8Url.substringAfter("#", "") else ""
+            val qualityHint = fragmentHint.ifEmpty { desiredQuality }
+            val targetHeight = ExtractorUtils.extractQualityHeight(qualityHint) ?: 1080
 
             val lines = content.lines()
+            val groupAttrPattern = Pattern.compile("GROUP-ID=[\"']([^\"']+)[\"']")
+            val streamAudioGroupPattern = Pattern.compile("AUDIO=[\"']([^\"']+)[\"']")
+
+            data class HlsAudioTrack(val groupId: String, val isDefault: Boolean, val uri: String)
+            val audioTracks = mutableListOf<HlsAudioTrack>()
+            for (line in lines) {
+                val l = line.trim()
+                if (l.startsWith("#EXT-X-MEDIA:") && l.contains("TYPE=AUDIO")) {
+                    val uriM = URI_PATTERN.matcher(l)
+                    if (uriM.find()) {
+                        val rawAudio = uriM.group(1) ?: ""
+                        if (rawAudio.isNotEmpty()) {
+                            val resolved = if (rawAudio.startsWith("http")) rawAudio else baseUri.resolve(rawAudio).toString()
+                            val gm = groupAttrPattern.matcher(l)
+                            val gid = if (gm.find()) gm.group(1).orEmpty() else ""
+                            val isDef = l.contains("DEFAULT=YES", ignoreCase = true) ||
+                                l.contains("AUTOSELECT=YES", ignoreCase = true)
+                            audioTracks.add(HlsAudioTrack(gid, isDef, resolved))
+                        }
+                    }
+                }
+            }
+
             var selectedSubUrl: String? = null
+            var selectedAudioGroup: String? = null
             var bestDiff = Int.MAX_VALUE
+            var bestCodecRank = -1
             var currentHeight = 0
+            var currentCodecRank = 1
+            var currentAudioGroup: String? = null
 
             for (line in lines) {
                 val l = line.trim()
                 if (l.startsWith("#EXT-X-STREAM-INF")) {
                     currentHeight = 0
+                    val lowerLine = l.lowercase(Locale.ROOT)
+                    currentCodecRank = when {
+                        lowerLine.contains("avc1") -> 3
+                        lowerLine.contains("hev1") || lowerLine.contains("hvc1") -> 2
+                        !lowerLine.contains("av01") -> 1
+                        else -> 0
+                    }
                     val rm = RESOLUTION_PATTERN.matcher(l)
                     if (rm.find()) {
-                        currentHeight = rm.group(2)?.toIntOrNull() ?: 0
+                        val w = rm.group(1)?.toIntOrNull() ?: 0
+                        val h = rm.group(2)?.toIntOrNull() ?: 0
+                        currentHeight = ExtractorUtils.normalizeResolutionTier(w, h)
                     }
+                    val am = streamAudioGroupPattern.matcher(l)
+                    currentAudioGroup = if (am.find()) am.group(1) else null
                 } else if (!l.startsWith("#") && l.isNotEmpty()) {
                     val candidateUrl = if (l.startsWith("http://") || l.startsWith("https://")) l else baseUri.resolve(l).toString()
-                    val diff = if (currentHeight > 0) abs(currentHeight - targetHeight) else (bestDiff - 1)
-                    if (diff < bestDiff) {
-                        bestDiff = diff
+                    if (currentHeight > 0) {
+                        val diff = abs(currentHeight - targetHeight)
+                        if (diff < bestDiff || (diff == bestDiff && currentCodecRank > bestCodecRank)) {
+                            bestDiff = diff
+                            bestCodecRank = currentCodecRank
+                            selectedSubUrl = candidateUrl
+                            selectedAudioGroup = currentAudioGroup
+                        }
+                    } else if (selectedSubUrl == null) {
                         selectedSubUrl = candidateUrl
+                        selectedAudioGroup = currentAudioGroup
                     }
                 }
             }
             if (selectedSubUrl != null) {
                 currentPlaylistUrl = selectedSubUrl
+            }
+            if (audioTracks.isNotEmpty()) {
+                val chosenAudio = audioTracks
+                    .filter { selectedAudioGroup.isNullOrEmpty() || it.groupId == selectedAudioGroup }
+                    .maxByOrNull { it.isDefault }
+                    ?: audioTracks.firstOrNull { it.isDefault }
+                    ?: audioTracks.first()
+                audioPlaylistUrl = chosenAudio.uri
             }
         }
 
@@ -236,13 +708,13 @@ object HlsSegmentDownloader {
 
             try {
                 FileOutputStream(tempVideoFile).use { videoOut ->
-                    downloadPlaylistSegments(client, currentPlaylistUrl, referer, videoOut, 0.70f, 0f, listener, isCancelled)
+                    downloadPlaylistSegments(client, currentPlaylistUrl, referer, extraHeaders, videoOut, 0.70f, 0f, listener, isCancelled)
                 }
 
                 if (isCancelled?.get() == true) return
 
                 FileOutputStream(tempAudioFile).use { audioOut ->
-                    downloadPlaylistSegments(client, audioPlaylistUrl, referer, audioOut, 0.25f, 70f, listener, isCancelled)
+                    downloadPlaylistSegments(client, audioPlaylistUrl, referer, extraHeaders, audioOut, 0.25f, 70f, listener, isCancelled)
                 }
 
                 if (isCancelled?.get() == true) return
@@ -256,7 +728,7 @@ object HlsSegmentDownloader {
             }
         } else {
             // Стандартний сумісний HLS потік (MPEG-TS або єдиний fMP4)
-            downloadPlaylistSegments(client, currentPlaylistUrl, referer, out, 1.0f, 0f, listener, isCancelled)
+            downloadPlaylistSegments(client, currentPlaylistUrl, referer, extraHeaders, out, 1.0f, 0f, listener, isCancelled)
         }
     }
 
@@ -264,13 +736,14 @@ object HlsSegmentDownloader {
         client: OkHttpClient,
         playlistUrl: String,
         referer: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
         out: OutputStream,
         progressWeight: Float,
         baseProgress: Float,
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?
     ): Long {
-        val mediaReq = buildRequestWithHeaders(playlistUrl, referer)
+        val mediaReq = buildRequestWithHeaders(playlistUrl, referer, extraHeaders)
         val mediaContent = client.newCall(mediaReq).execute().use { mediaResp ->
             if (!mediaResp.isSuccessful || mediaResp.body == null) {
                 throw IllegalStateException("Помилка завантаження медіа-плейлиста HLS (${mediaResp.code})")
@@ -332,7 +805,7 @@ object HlsSegmentDownloader {
         // Завантаження fMP4 ініціалізаційного сегмента (#EXT-X-MAP)
         val targetInitUrl = initSegmentUrl
         if (!targetInitUrl.isNullOrEmpty()) {
-            val initReq = buildRequestWithHeaders(targetInitUrl, referer)
+            val initReq = buildRequestWithHeaders(targetInitUrl, referer, extraHeaders)
             try {
                 client.newCall(initReq).execute().use { initResp ->
                     if (initResp.isSuccessful && initResp.body != null) {
@@ -356,7 +829,7 @@ object HlsSegmentDownloader {
         var aesKeyBytes: ByteArray? = null
         val targetKeyUrl = aesKeyUrl
         if (isAes128 && !targetKeyUrl.isNullOrEmpty()) {
-            val keyReq = buildRequestWithHeaders(targetKeyUrl, referer)
+            val keyReq = buildRequestWithHeaders(targetKeyUrl, referer, extraHeaders)
             client.newCall(keyReq).execute().use { keyResp ->
                 if (keyResp.isSuccessful && keyResp.body != null) {
                     aesKeyBytes = keyResp.body?.bytes()
@@ -376,7 +849,7 @@ object HlsSegmentDownloader {
             if (isCancelled?.get() == true) break
 
             val segUrl = segmentUrls[i]
-            val segBytes = downloadSegmentWithRetry(client, segUrl, referer, isCancelled)
+            val segBytes = downloadSegmentWithRetry(client, segUrl, referer, extraHeaders, isCancelled)
             if (segBytes != null && segBytes.isNotEmpty()) {
                 val finalBytes = if (isAes128 && keyBytes != null) {
                     decryptAes128(segBytes, keyBytes, aesIvHex, mediaSequence + i)
@@ -417,9 +890,10 @@ object HlsSegmentDownloader {
         client: OkHttpClient,
         segUrl: String,
         referer: String?,
+        extraHeaders: Map<String, String> = emptyMap(),
         isCancelled: AtomicBoolean?
     ): ByteArray? {
-        val segReq = buildRequestWithHeaders(segUrl, referer)
+        val segReq = buildRequestWithHeaders(segUrl, referer, extraHeaders)
         for (attempt in 1..SEGMENT_MAX_RETRIES) {
             if (isCancelled?.get() == true) return null
             try {
@@ -443,63 +917,117 @@ object HlsSegmentDownloader {
         return null
     }
 
+    internal fun selectMuxerOutputFormat(videoMime: String, audioMime: String): Int {
+        val v = videoMime.lowercase(Locale.ROOT)
+        val a = audioMime.lowercase(Locale.ROOT)
+        val audioIsWebm = a.contains("opus") || a.contains("vorbis")
+        val videoIsVpx = v.contains("vp9") || v.contains("vp8")
+        return if (audioIsWebm || (videoIsVpx && a.isEmpty())) {
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
+        } else {
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+        }
+    }
+
     private fun muxVideoAndAudio(videoFile: File, audioFile: File, outStream: OutputStream) {
-        val tempMuxFile = File.createTempFile("muxed_", ".mp4", videoFile.parentFile)
+        val tempMuxFile = File.createTempFile("muxed_", ".tmp", videoFile.parentFile)
         var muxer: MediaMuxer? = null
         var videoExtractor: MediaExtractor? = null
         var audioExtractor: MediaExtractor? = null
 
         try {
-            muxer = MediaMuxer(tempMuxFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-
             videoExtractor = MediaExtractor().apply { setDataSource(videoFile.absolutePath) }
-            var videoTrackIdx = -1
+            var selectedVideoFormat: MediaFormat? = null
+            var videoMime = ""
+            var requiredBufferSize = 4 * 1024 * 1024
             for (i in 0 until videoExtractor.trackCount) {
                 val format = videoExtractor.getTrackFormat(i)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
                 if (mime.startsWith("video/")) {
-                    videoTrackIdx = muxer.addTrack(format)
+                    if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                        requiredBufferSize = max(requiredBufferSize, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE))
+                    }
+                    selectedVideoFormat = format
+                    videoMime = mime
                     videoExtractor.selectTrack(i)
                     break
                 }
             }
 
+            if (selectedVideoFormat == null) {
+                throw IllegalStateException("У відеопотоці не знайдено відеодоріжку")
+            }
+
             audioExtractor = MediaExtractor().apply { setDataSource(audioFile.absolutePath) }
-            var audioTrackIdx = -1
+            var selectedAudioFormat: MediaFormat? = null
+            var audioMime = ""
             for (i in 0 until audioExtractor.trackCount) {
                 val format = audioExtractor.getTrackFormat(i)
                 val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
                 if (mime.startsWith("audio/")) {
-                    audioTrackIdx = muxer.addTrack(format)
+                    if (format.containsKey(MediaFormat.KEY_MAX_INPUT_SIZE)) {
+                        requiredBufferSize = max(requiredBufferSize, format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE))
+                    }
+                    selectedAudioFormat = format
+                    audioMime = mime
                     audioExtractor.selectTrack(i)
                     break
                 }
             }
 
-            muxer.start()
-
-            val buffer = ByteBuffer.allocate(2 * 1024 * 1024)
-            val bufferInfo = MediaCodec.BufferInfo()
-
-            if (videoTrackIdx != -1) {
-                while (true) {
-                    bufferInfo.size = videoExtractor.readSampleData(buffer, 0)
-                    if (bufferInfo.size < 0) break
-                    bufferInfo.presentationTimeUs = videoExtractor.sampleTime
-                    bufferInfo.flags = videoExtractor.sampleFlags
-                    muxer.writeSampleData(videoTrackIdx, buffer, bufferInfo)
-                    videoExtractor.advance()
+            val outputFormat = selectMuxerOutputFormat(videoMime, audioMime)
+            muxer = MediaMuxer(tempMuxFile.absolutePath, outputFormat)
+            val videoTrackIdx = muxer.addTrack(selectedVideoFormat)
+            var audioTrackIdx = -1
+            if (selectedAudioFormat != null) {
+                audioTrackIdx = try {
+                    muxer.addTrack(selectedAudioFormat)
+                } catch (_: Exception) {
+                    -1
                 }
             }
 
-            if (audioTrackIdx != -1) {
-                while (true) {
+            muxer.start()
+
+            val buffer = ByteBuffer.allocate(requiredBufferSize)
+            val bufferInfo = MediaCodec.BufferInfo()
+
+            var hasVideo = true
+            var hasAudio = audioTrackIdx != -1
+
+            while (hasVideo || hasAudio) {
+                val videoTime = if (hasVideo) videoExtractor.sampleTime else Long.MAX_VALUE
+                val audioTime = if (hasAudio) audioExtractor.sampleTime else Long.MAX_VALUE
+
+                val writeVideo = hasVideo && (!hasAudio || videoTime <= audioTime)
+                if (writeVideo) {
+                    buffer.clear()
+                    bufferInfo.offset = 0
+                    bufferInfo.size = videoExtractor.readSampleData(buffer, 0)
+                    if (bufferInfo.size < 0) {
+                        hasVideo = false
+                    } else {
+                        bufferInfo.presentationTimeUs = videoTime.coerceAtLeast(0L)
+                        bufferInfo.flags = videoExtractor.sampleFlags
+                        muxer.writeSampleData(videoTrackIdx, buffer, bufferInfo)
+                        if (!videoExtractor.advance()) {
+                            hasVideo = false
+                        }
+                    }
+                } else if (hasAudio) {
+                    buffer.clear()
+                    bufferInfo.offset = 0
                     bufferInfo.size = audioExtractor.readSampleData(buffer, 0)
-                    if (bufferInfo.size < 0) break
-                    bufferInfo.presentationTimeUs = audioExtractor.sampleTime
-                    bufferInfo.flags = audioExtractor.sampleFlags
-                    muxer.writeSampleData(audioTrackIdx, buffer, bufferInfo)
-                    audioExtractor.advance()
+                    if (bufferInfo.size < 0) {
+                        hasAudio = false
+                    } else {
+                        bufferInfo.presentationTimeUs = audioTime.coerceAtLeast(0L)
+                        bufferInfo.flags = audioExtractor.sampleFlags
+                        muxer.writeSampleData(audioTrackIdx, buffer, bufferInfo)
+                        if (!audioExtractor.advance()) {
+                            hasAudio = false
+                        }
+                    }
                 }
             }
 

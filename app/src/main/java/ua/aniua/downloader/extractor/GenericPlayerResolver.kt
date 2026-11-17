@@ -74,6 +74,7 @@ object GenericPlayerResolver {
 
         // 4. Спеціалізовані балансери
         val streams: List<StreamQuality> = when {
+            YouTubeExtractor.isYouTubeUrl(url) -> YouTubeExtractor.resolveStreams(client, url)
             lower.contains("ashdi") -> AshdiExtractor.extractStreams(client, url, referer)
             lower.contains("tortuga") -> TortugaExtractor.extractStreams(client, url, referer)
             FenixExtractor.isFenixUrl(url) -> FenixExtractor.extractStreams(client, url, referer)
@@ -676,11 +677,9 @@ object GenericPlayerResolver {
     }
 
     private fun isIgnoredAssetUrl(url: String): Boolean {
+        if (ExtractorUtils.isImageUrl(url)) return true
         val clean = url.substringBefore("?").substringBefore("#").lowercase(Locale.ROOT)
-        return clean.endsWith(".jpg") || clean.endsWith(".jpeg") || clean.endsWith(".png") ||
-            clean.endsWith(".webp") || clean.endsWith(".gif") || clean.endsWith(".svg") ||
-            clean.endsWith(".vtt") || clean.endsWith(".srt") || clean.endsWith(".css") ||
-            clean.endsWith(".js")
+        return clean.endsWith(".vtt") || clean.endsWith(".srt") || clean.endsWith(".css") || clean.endsWith(".js")
     }
 
     internal fun unpackJs(html: String): String {

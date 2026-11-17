@@ -46,14 +46,21 @@ class DownloadService : Service() {
                             append(task.eta)
                         }
                     }.ifEmpty { "Завантаження…" }
-                    val title = "${prefix}${task.mediaTitle} (Серія ${task.episodeNumber})"
+                    val title = if (task.isSingle) {
+                        "${prefix}${task.mediaTitle}"
+                    } else {
+                        "${prefix}${task.mediaTitle} (Серія ${task.episodeNumber})"
+                    }
                     notificationManager.notify(NOTIFICATION_ID, buildNotification(title, task.progress.toInt(), sub))
                 }
             }
             DownloadState.COMPLETED, DownloadState.ERROR, DownloadState.CANCELLED -> {
                 if (activeCount == 0) {
                     val (title, text) = when (task.state) {
-                        DownloadState.COMPLETED -> "Завантаження завершено: ${task.mediaTitle}" to "Серія ${task.episodeNumber} збережена"
+                        DownloadState.COMPLETED -> {
+                            val subText = if (task.isSingle) "Відео збережено" else "Серія ${task.episodeNumber} збережена"
+                            "Завантаження завершено: ${task.mediaTitle}" to subText
+                        }
                         DownloadState.ERROR -> "Помилка завантаження: ${task.mediaTitle}" to (task.errorMessage ?: "Невідома помилка")
                         else -> "Завантаження скасовано" to task.mediaTitle
                     }

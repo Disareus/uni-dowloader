@@ -100,14 +100,14 @@ class DownloadQueueManager private constructor(context: Context) {
                 task.folderName = folderToUse
 
                 val isSeriesFolder = !task.folderName.isNullOrEmpty() && task.folderName != "Downloads"
-                val isSingleVideo = !isSeriesFolder && (
+                val isSingleVideo = task.isSingle || (!isSeriesFolder && (
                     task.episodeNumber == "0" || task.episodeNumber.isEmpty() ||
                         task.episodeTitle.contains("Повне відео") ||
                         task.episodeTitle.contains("YouTube") ||
                         task.episodeTitle.contains("TikTok") ||
                         task.episodeTitle.contains("Instagram") ||
                         task.mediaTitle == task.episodeTitle
-                    )
+                    ))
 
                 val fileName = if (isSingleVideo) {
                     "$safeTitle [${task.quality}].${task.format}"
@@ -116,7 +116,12 @@ class DownloadQueueManager private constructor(context: Context) {
                     "$safeTitle - Серія $safeEp [${task.quality}].${task.format}"
                 }
 
-                contentUri = downloadSecurity.createScopedVideoUri(fileName, "video/${task.format}", folderToUse)
+                val mimeType = when {
+                    task.format.equals("mkv", ignoreCase = true) -> "video/x-matroska"
+                    task.format.equals("webm", ignoreCase = true) -> "video/webm"
+                    else -> "video/mp4"
+                }
+                contentUri = downloadSecurity.createScopedVideoUri(fileName, mimeType, folderToUse)
                 outStream = if (contentUri != null) {
                     task.savedFilePath = contentUri.toString()
                     context.contentResolver.openOutputStream(contentUri)
@@ -149,6 +154,11 @@ class DownloadQueueManager private constructor(context: Context) {
                     cancelToken
                 )
 
+                try {
+                    outStream.close()
+                } catch (_: Exception) {}
+                outStream = null
+
                 if (task.state == DownloadState.COMPLETED && contentUri != null) {
                     downloadSecurity.publishPendingVideo(contentUri)
                 } else if (task.state != DownloadState.COMPLETED) {
@@ -157,6 +167,10 @@ class DownloadQueueManager private constructor(context: Context) {
 
                 notifyUpdate(task)
             } catch (e: Exception) {
+                try {
+                    outStream?.close()
+                } catch (_: Exception) {}
+                outStream = null
                 task.state = if (cancelToken.get()) DownloadState.CANCELLED else DownloadState.ERROR
                 task.errorMessage = if (task.state == DownloadState.ERROR) (e.message ?: "Помилка завантаження") else null
                 cleanupPartialOutput(contentUri, legacyFile)

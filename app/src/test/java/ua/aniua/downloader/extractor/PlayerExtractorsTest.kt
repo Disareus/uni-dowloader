@@ -1,11 +1,13 @@
 package ua.aniua.downloader.extractor
 
+import android.media.MediaMuxer
 import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import ua.aniua.downloader.service.HlsSegmentDownloader
 
 class PlayerExtractorsTest {
 
@@ -678,6 +680,395 @@ class PlayerExtractorsTest {
         assertNotNull(twoEmbedTpl)
         assertTrue(twoEmbedTpl!!.supportsSeason)
         assertEquals("https://www.2embed.cc/embedtv/57243&s=13&e=4", twoEmbedTpl.buildUrl(13, 4))
+    }
+
+    @Test
+    fun testTikTokNoWatermarkParsingAndCoverImageFiltering() {
+        val coverDynamic = "https://p19-common-sign.tiktokcdn-us.com/tos-useast5-p-0068-tx/abc~tplv-tiktokx-origin.image?x-expires=123&sc=dynamic_cover"
+        val coverJpeg = "https://p16-sign-va.tiktokcdn.com/tos-maliva-p-0068/def~tplv-tiktokx-cropcenter-q:300:400:q70.jpeg?sc=cover"
+        val igThumb = "https://scontent.cdninstagram.com/v/t51.2885-15/123.jpg?stp=dst-jpg_e35"
+
+        assertTrue(ExtractorUtils.isImageUrl(coverDynamic))
+        assertTrue(ExtractorUtils.isImageUrl(coverJpeg))
+        assertTrue(ExtractorUtils.isImageUrl(igThumb))
+        assertFalse(ExtractorUtils.isDirectMediaUrl(coverDynamic))
+        assertFalse(ExtractorUtils.isDirectMediaUrl(coverJpeg))
+        assertFalse(ExtractorUtils.isDirectMediaUrl(igThumb))
+        assertFalse(WebViewStreamResolver.isInterceptableMediaUrl(coverDynamic))
+        assertFalse(WebViewStreamResolver.isInterceptableMediaUrl(coverJpeg))
+
+        val realTikTokCdnVideo = "https://v16m.tiktokcdn.com/video/tos/useast2a/tos-useast2a-ve-0068c001/xyz/?mime_type=video_mp4&qs=0"
+        val tikMateHd = "https://tikmate.app/download/hdTok1/7106594312292453675.mp4?hd=1"
+        val nowmRedirect = "https://wrath.nowmvideo.com:8443/download/hdTok1/7106594312292453675.bin?hd=1"
+
+        assertTrue(ExtractorUtils.isDirectMediaUrl(realTikTokCdnVideo))
+        assertTrue(ExtractorUtils.isDirectMediaUrl(tikMateHd))
+        assertTrue(ExtractorUtils.isDirectMediaUrl(nowmRedirect))
+        assertTrue(WebViewStreamResolver.isInterceptableMediaUrl(realTikTokCdnVideo))
+
+        val tikMateJson = """
+            {
+              "success": true,
+              "id": "7106594312292453675",
+              "desc": "Cool Frog Clip",
+              "author_name": "TikTok",
+              "author_id": "tiktok",
+              "cover": "$coverJpeg",
+              "dynamic_cover": "$coverDynamic",
+              "token": "sdTok1",
+              "hd_token": "hdTok1"
+            }
+        """.trimIndent()
+        val mateInfo = TikTokExtractor.parseTikMateResponse(tikMateJson, "https://www.tiktok.com/@tiktok/video/7106594312292453675")
+        assertNotNull(mateInfo)
+        assertEquals("Cool Frog Clip (@TikTok)", mateInfo!!.title)
+        assertEquals(coverJpeg, mateInfo.posterUrl)
+        val matePlayers = mateInfo.studios.first().players
+        assertEquals(2, matePlayers.size)
+        assertEquals("https://tikmate.app/download/hdTok1/7106594312292453675.mp4?hd=1", matePlayers[0].episodes.first().iframeUrl)
+        assertEquals("https://tikmate.app/download/sdTok1/7106594312292453675.mp4", matePlayers[1].episodes.first().iframeUrl)
+
+        val tikWmJson = """
+            {
+              "code": 0,
+              "data": {
+                "id": "7106594312292453675",
+                "title": "Cool Frog Clip",
+                "cover": "/video/cover/7106594312292453675.jpeg",
+                "hdplay": "/video/media/hdplay/7106594312292453675.mp4",
+                "play": "/video/media/play/7106594312292453675.mp4",
+                "wmplay": "/video/media/wmplay/7106594312292453675.mp4",
+                "author": {"nickname": "TikTok"}
+              }
+            }
+        """.trimIndent()
+        val wmInfo = TikTokExtractor.parseTikWmResponse(tikWmJson, "https://www.tiktok.com/@tiktok/video/7106594312292453675")
+        assertNotNull(wmInfo)
+        assertEquals("https://www.tikwm.com/video/media/hdplay/7106594312292453675.mp4", wmInfo!!.studios.first().players[0].episodes.first().iframeUrl)
+        assertEquals("https://www.tikwm.com/video/media/play/7106594312292453675.mp4", wmInfo.studios.first().players[1].episodes.first().iframeUrl)
+
+        val preloadedHtml = """
+            <html>
+            <head><meta property="og:title" content="Test Video"><meta property="og:image" content="$coverJpeg"></head>
+            <body>
+              <script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">
+                {"video":{"cover":"$coverDynamic","downloadAddr":"https://v16.tiktokcdn.com/watermarked.mp4","playAddr":"https://v16-webapp-prime.tiktok.com/video/tos/useast2a/clean123/?mime_type=video_mp4"}}
+              </script>
+            </body>
+            </html>
+        """.trimIndent()
+        val domInfo = TikTokExtractor.parseFromPreloadedHtml(preloadedHtml, "https://www.tiktok.com/@tiktok/video/7106594312292453675")
+        assertNotNull(domInfo)
+        assertEquals(
+            "https://v16-webapp-prime.tiktok.com/video/tos/useast2a/clean123/?mime_type=video_mp4",
+            domInfo!!.studios.first().players.first().episodes.first().iframeUrl
+        )
+    }
+
+    @Test
+    fun testYouTubeShortsAndInnertubeAdaptiveMuxParsing() {
+        assertEquals(
+            "tPEE9ZwTmy0",
+            YouTubeExtractor.extractVideoId("https://youtube.com/shorts/tPEE9ZwTmy0?si=share123")
+        )
+        assertEquals(
+            "dQw4w9WgXcQ",
+            YouTubeExtractor.extractVideoId("https://www.youtube.com/watch?prev=abc12345678&v=dQw4w9WgXcQ")
+        )
+        assertEquals(
+            "dQw4w9WgXcQ",
+            YouTubeExtractor.extractVideoId("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ")
+        )
+
+        val innertubeJson = """
+            {
+              "videoDetails": {
+                "title": "Cool Short Clip",
+                "author": "TestChannel",
+                "shortDescription": "Shorts test"
+              },
+              "streamingData": {
+                "formats": [
+                  {"itag": 18, "qualityLabel": "360p", "height": 360, "url": "https://rr1.googlevideo.com/videoplayback?itag=18"}
+                ],
+                "adaptiveFormats": [
+                  {"itag": 399, "qualityLabel": "1080p", "height": 1080, "mimeType": "video/mp4; codecs=\"av01.0.08M.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=399"},
+                  {"itag": 137, "qualityLabel": "1080p", "height": 1080, "mimeType": "video/mp4; codecs=\"avc1.640028\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=137"},
+                  {"itag": 136, "qualityLabel": "720p", "height": 720, "mimeType": "video/mp4; codecs=\"avc1.4D401F\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=136"},
+                  {"itag": 140, "bitrate": 130000, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=140"}
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsed = YouTubeExtractor.parseInnertubeResponse(
+            innertubeJson,
+            "tPEE9ZwTmy0",
+            "https://www.youtube.com/shorts/tPEE9ZwTmy0"
+        )
+        assertNotNull(parsed)
+        assertEquals("Cool Short Clip (TestChannel)", parsed!!.mediaInfo.title)
+        assertEquals(listOf("1080p", "720p", "360p"), parsed.qualities.map { it.label })
+
+        val best1080 = ExtractorUtils.selectBestStream(parsed.qualities, "1080p")
+        assertTrue(best1080.url.contains("itag=137"))
+        assertEquals("https://rr1.googlevideo.com/videoplayback?itag=140", best1080.audioUrl)
+
+        val muxed360 = ExtractorUtils.selectBestStream(parsed.qualities, "360p")
+        assertTrue(muxed360.url.contains("itag=18"))
+        assertEquals(null, muxed360.audioUrl)
+    }
+
+    @Test
+    fun testInstagramReelsShortcodesEmbedUnescapeAndJsonParsing() {
+        assertEquals(
+            "DB123456789",
+            InstagramExtractor.extractShortcode("https://www.instagram.com/nasa/reel/DB123456789/?igsh=123")
+        )
+
+        val igVideoCdn = "https://scontent-waw2-1.cdninstagram.com/o1/v/t16/f2/m86/abc_video?efg=123"
+        val igThumbCdn = "https://scontent-waw2-1.cdninstagram.com/v/t51.2885-15/abc.jpg?stp=dst-jpg_e35"
+        assertTrue(ExtractorUtils.isDirectMediaUrl(igVideoCdn))
+        assertFalse(ExtractorUtils.isDirectMediaUrl(igThumbCdn))
+
+        val embedHtml = """
+            <html>
+            <head><meta property="og:image" content="https://scontent.cdninstagram.com/cover.jpg" /></head>
+            <body>
+              <div class="UsernameText">nasawebb</div>
+              <div class="Caption">Webb Telescope View</div>
+              <script>
+                window.__data = {"playable_url_quality_hd":"https:\/\/scontent.cdninstagram.com\/v\/t50.2886-16\/reel_hd.mp4\u0026_nc_ht=scontent"};
+              </script>
+            </body>
+            </html>
+        """.trimIndent()
+        val embedInfo = InstagramExtractor.parseEmbedHtml(
+            embedHtml,
+            "DB123456789",
+            "https://www.instagram.com/p/DB123456789/embed/captioned/",
+            "https://www.instagram.com/reel/DB123456789/"
+        )
+        assertNotNull(embedInfo)
+        assertEquals(
+            "https://scontent.cdninstagram.com/v/t50.2886-16/reel_hd.mp4&_nc_ht=scontent",
+            embedInfo!!.studios.first().players.first().episodes.first().iframeUrl
+        )
+        assertEquals("Webb Telescope View (@nasawebb)", embedInfo.title)
+
+        val graphQlJson = """
+            {
+              "data": {
+                "xdt_shortcode_media": {
+                  "is_video": true,
+                  "video_url": "https://scontent.cdninstagram.com/v/t50.2886-16/gql_reel.mp4",
+                  "display_url": "https://scontent.cdninstagram.com/cover.jpg",
+                  "owner": {"username": "instagram"},
+                  "edge_media_to_caption": {"edges": [{"node": {"text": "GraphQL Reel Caption"}}]}
+                }
+              }
+            }
+        """.trimIndent()
+        val gqlInfo = InstagramExtractor.parseInstagramJson(
+            graphQlJson,
+            "DB123456789",
+            "https://www.instagram.com/reel/DB123456789/"
+        )
+        assertNotNull(gqlInfo)
+        assertEquals(
+            "https://scontent.cdninstagram.com/v/t50.2886-16/gql_reel.mp4",
+            gqlInfo!!.studios.first().players.first().episodes.first().iframeUrl
+        )
+        assertEquals("GraphQL Reel Caption (@instagram)", gqlInfo.title)
+
+        val vrHeaders = ExtractorUtils.buildStreamHeaders(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=18&c=ANDROID_VR",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+        assertEquals(YouTubeExtractor.ANDROID_VR_USER_AGENT, vrHeaders["User-Agent"])
+        assertFalse(vrHeaders.containsKey("Referer"))
+        assertFalse(vrHeaders.containsKey("Origin"))
+
+        val iosHeaders = ExtractorUtils.buildStreamHeaders(
+            "https://manifest.googlevideo.com/api/manifest/hls_variant/c/IOS/file/index.m3u8?c=IOS",
+            "https://www.youtube.com/shorts/tPEE9ZwTmy0"
+        )
+        assertEquals(YouTubeExtractor.IOS_USER_AGENT, iosHeaders["User-Agent"])
+        assertFalse(iosHeaders.containsKey("Referer"))
+    }
+
+    @Test
+    fun testVerticalShortsQualityNormalization60FpsAndPlayerUrlCleaning() {
+        assertEquals(1080, ExtractorUtils.extractQualityHeight("1080p60"))
+        assertEquals(720, ExtractorUtils.extractQualityHeight("720p60"))
+        assertEquals(720, ExtractorUtils.extractQualityHeight("720p (Без водяного знаку)"))
+        assertEquals(480, ExtractorUtils.extractQualityHeight("480p (Fenix)"))
+
+        assertEquals(1080, ExtractorUtils.normalizeResolutionTier(1080, 1920))
+        assertEquals(720, ExtractorUtils.normalizeResolutionTier(720, 1280))
+        assertEquals(480, ExtractorUtils.normalizeResolutionTier(480, 854))
+        assertEquals(1080, ExtractorUtils.normalizeResolutionTier(1920, 800))
+        assertEquals(720, ExtractorUtils.normalizeResolutionTier(1280, 534))
+
+        val verticalShortsJson = """
+            {
+              "videoDetails": {
+                "title": "Vertical Short 60fps",
+                "author": "ShortsMaker"
+              },
+              "streamingData": {
+                "formats": [
+                  {"itag": 18, "qualityLabel": "360p", "width": 360, "height": 640, "url": "https://rr1.googlevideo.com/videoplayback?itag=18"}
+                ],
+                "adaptiveFormats": [
+                  {"itag": 299, "qualityLabel": "1080p60", "width": 1080, "height": 1920, "mimeType": "video/mp4; codecs=\"avc1.64002A\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=299"},
+                  {"itag": 298, "qualityLabel": "720p60", "width": 720, "height": 1280, "mimeType": "video/mp4; codecs=\"avc1.4D4020\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=298"},
+                  {"itag": 135, "qualityLabel": "480p", "width": 480, "height": 854, "mimeType": "video/mp4; codecs=\"avc1.4D401E\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=135"},
+                  {"itag": 140, "bitrate": 128000, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=140"}
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsed = YouTubeExtractor.parseInnertubeResponse(
+            verticalShortsJson,
+            "s9999999999",
+            "https://www.youtube.com/shorts/s9999999999"
+        )
+        assertNotNull(parsed)
+        assertEquals(listOf(1080, 720, 480, 360), parsed!!.qualities.map { it.height })
+
+        val chosen1080 = ExtractorUtils.selectBestStream(parsed.qualities, "1080p60")
+        assertTrue(chosen1080.url.contains("itag=299"))
+        val chosen720 = ExtractorUtils.selectBestStream(parsed.qualities, "720p60")
+        assertTrue(chosen720.url.contains("itag=298"))
+        val chosen480 = ExtractorUtils.selectBestStream(parsed.qualities, "480p")
+        assertTrue(chosen480.url.contains("itag=135"))
+        val chosen360 = ExtractorUtils.selectBestStream(parsed.qualities, "360p")
+        assertTrue(chosen360.url.contains("itag=18"))
+
+        assertEquals(
+            "https://cdn.example.com/master.m3u8",
+            ExtractorUtils.stripFragmentHint("https://cdn.example.com/master.m3u8#480p")
+        )
+        assertEquals(
+            "file:///storage/emulated/0/Movies/Clip #1 [1080p].mp4",
+            ExtractorUtils.stripFragmentHint("file:///storage/emulated/0/Movies/Clip #1 [1080p].mp4")
+        )
+
+        val tikHeaders = ExtractorUtils.buildStreamHeaders(
+            "https://tikmate.app/download/tok/123.mp4?hd=1",
+            "https://www.tiktok.com/@user/video/123"
+        )
+        assertFalse(tikHeaders.containsKey("Referer"))
+        assertFalse(tikHeaders.containsKey("Origin"))
+
+        val ashdiHeaders = ExtractorUtils.buildStreamHeaders(
+            "https://cdn.ashdi.vip/video/master.m3u8",
+            "https://ashdi.vip/vod/123"
+        )
+        assertEquals("https://ashdi.vip/vod/123", ashdiHeaders["Referer"])
+        assertEquals("https://ashdi.vip", ashdiHeaders["Origin"])
+    }
+
+    @Test
+    fun testYouTube2K4KWebmAndAv1ParsingAndHelpers() {
+        val innertube4kJson = """
+            {
+              "videoDetails": {
+                "title": "Costa Rica 4K",
+                "author": "NatureChannel"
+              },
+              "streamingData": {
+                "formats": [
+                  {"itag": 18, "qualityLabel": "360p", "width": 640, "height": 360, "url": "https://rr1.googlevideo.com/videoplayback?itag=18"}
+                ],
+                "adaptiveFormats": [
+                  {"itag": 337, "qualityLabel": "2160p60 HDR", "width": 3840, "height": 2160, "fps": 60, "bitrate": 24000000, "mimeType": "video/webm; codecs=\"vp09.02.51.10\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=337&mime=video%2Fwebm"},
+                  {"itag": 315, "qualityLabel": "2160p60", "width": 3840, "height": 2160, "fps": 60, "bitrate": 20000000, "mimeType": "video/webm; codecs=\"vp09.00.51.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=315&mime=video%2Fwebm"},
+                  {"itag": 401, "qualityLabel": "2160p60", "width": 3840, "height": 2160, "fps": 60, "bitrate": 14000000, "mimeType": "video/mp4; codecs=\"av01.0.13M.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=401&mime=video%2Fmp4"},
+                  {"itag": 308, "qualityLabel": "1440p60", "width": 2560, "height": 1440, "fps": 60, "bitrate": 10000000, "mimeType": "video/webm; codecs=\"vp09.00.50.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=308&mime=video%2Fwebm"},
+                  {"itag": 400, "qualityLabel": "1440p60", "width": 2560, "height": 1440, "fps": 60, "bitrate": 8000000, "mimeType": "video/mp4; codecs=\"av01.0.12M.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=400&mime=video%2Fmp4"},
+                  {"itag": 299, "qualityLabel": "1080p60", "width": 1920, "height": 1080, "fps": 60, "bitrate": 4500000, "mimeType": "video/mp4; codecs=\"avc1.64002A\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=299&mime=video%2Fmp4"},
+                  {"itag": 303, "qualityLabel": "1080p60", "width": 1920, "height": 1080, "fps": 60, "bitrate": 3500000, "mimeType": "video/webm; codecs=\"vp09.00.41.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=303&mime=video%2Fwebm"},
+                  {"itag": 136, "qualityLabel": "720p", "width": 1280, "height": 720, "fps": 30, "bitrate": 1500000, "mimeType": "video/mp4; codecs=\"avc1.4D401F\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=136&mime=video%2Fmp4"},
+                  {"itag": 140, "bitrate": 128000, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4"},
+                  {"itag": 251, "bitrate": 160000, "mimeType": "audio/webm; codecs=\"opus\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm"}
+                ]
+              }
+            }
+        """.trimIndent()
+
+        val parsed = YouTubeExtractor.parseInnertubeResponse(
+            innertube4kJson,
+            "LXb3EKWsInQ",
+            "https://www.youtube.com/watch?v=LXb3EKWsInQ"
+        )
+        assertNotNull(parsed)
+        assertEquals(listOf(2160, 1440, 1080, 720, 360), parsed!!.qualities.map { it.height })
+        assertEquals(listOf("2160p60", "1440p60", "1080p60", "720p", "360p"), parsed.mediaInfo.availableQualities)
+
+        val q4k = ExtractorUtils.selectBestStream(parsed.qualities, "2160p60")
+        assertTrue(q4k.url.contains("itag=315"))
+        assertEquals("https://rr1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm", q4k.audioUrl)
+        assertTrue(ExtractorUtils.isWebmStreamUrl(q4k.url))
+
+        val q2k = ExtractorUtils.selectBestStream(parsed.qualities, "1440p60")
+        assertTrue(q2k.url.contains("itag=308"))
+        assertEquals("https://rr1.googlevideo.com/videoplayback?itag=251&mime=audio%2Fwebm", q2k.audioUrl)
+
+        val q1080 = ExtractorUtils.selectBestStream(parsed.qualities, "1080p60")
+        assertTrue(q1080.url.contains("itag=299"))
+        assertEquals("https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4", q1080.audioUrl)
+        assertFalse(ExtractorUtils.isWebmStreamUrl(q1080.url))
+
+        // AV1 MP4 fallback when only MP4 audio is present
+        val av1OnlyJson = """
+            {
+              "videoDetails": {"title": "AV1 4K", "author": "Test"},
+              "streamingData": {
+                "formats": [
+                  {"itag": 18, "qualityLabel": "360p", "width": 640, "height": 360, "url": "https://rr1.googlevideo.com/videoplayback?itag=18"}
+                ],
+                "adaptiveFormats": [
+                  {"itag": 401, "qualityLabel": "2160p", "width": 3840, "height": 2160, "mimeType": "video/mp4; codecs=\"av01.0.12M.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=401&mime=video%2Fmp4"},
+                  {"itag": 400, "qualityLabel": "1440p", "width": 2560, "height": 1440, "mimeType": "video/mp4; codecs=\"av01.0.12M.08\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=400&mime=video%2Fmp4"},
+                  {"itag": 140, "bitrate": 128000, "mimeType": "audio/mp4; codecs=\"mp4a.40.2\"", "url": "https://rr1.googlevideo.com/videoplayback?itag=140&mime=audio%2Fmp4"}
+                ]
+              }
+            }
+        """.trimIndent()
+        val parsedAv1 = YouTubeExtractor.parseInnertubeResponse(av1OnlyJson, "LXb3EKWsInQ", "https://youtu.be/LXb3EKWsInQ")
+        assertNotNull(parsedAv1)
+        assertEquals(listOf(2160, 1440, 360), parsedAv1!!.qualities.map { it.height })
+
+        val mwebHeaders = ExtractorUtils.buildStreamHeaders(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=315&c=MWEB",
+            "https://www.youtube.com/watch?v=LXb3EKWsInQ"
+        )
+        assertEquals(YouTubeExtractor.MWEB_USER_AGENT, mwebHeaders["User-Agent"])
+        assertFalse(mwebHeaders.containsKey("Referer"))
+
+        val visionOsHeaders = ExtractorUtils.buildStreamHeaders(
+            "https://rr1---sn.googlevideo.com/videoplayback?itag=315&c=VISIONOS",
+            "https://www.youtube.com/watch?v=LXb3EKWsInQ"
+        )
+        assertEquals(YouTubeExtractor.VISIONOS_USER_AGENT, visionOsHeaders["User-Agent"])
+        assertFalse(visionOsHeaders.containsKey("Referer"))
+
+        assertEquals(
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM,
+            HlsSegmentDownloader.selectMuxerOutputFormat("video/x-vnd.on2.vp9", "audio/opus")
+        )
+        assertEquals(
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
+            HlsSegmentDownloader.selectMuxerOutputFormat("video/avc", "audio/mp4a-latm")
+        )
+        assertEquals(
+            80911999L,
+            HlsSegmentDownloader.parseContentRangeTotal("bytes 0-2097151/80911999")
+        )
+        assertEquals(null, HlsSegmentDownloader.parseContentRangeTotal("bytes 0-100/*"))
     }
 }
 

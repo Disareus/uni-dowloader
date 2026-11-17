@@ -8,5 +8,6 @@ data class StreamQuality(
     var url: String = "",
     var isHls: Boolean = false,
     val headers: MutableMap<String, String> = mutableMapOf(),
-    var subtitles: String? = null
+    var subtitles: String? = null,
+    var audioUrl: String? = null
 ) : Serializable

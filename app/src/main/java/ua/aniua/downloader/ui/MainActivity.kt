@@ -42,6 +42,7 @@ import ua.aniua.downloader.extractor.ExtractorRouter
 import ua.aniua.downloader.extractor.ExtractorUtils
 import ua.aniua.downloader.extractor.GenericPlayerResolver
 import ua.aniua.downloader.extractor.WebViewStreamResolver
+import ua.aniua.downloader.extractor.YouTubeExtractor
 import ua.aniua.downloader.model.DownloadTask
 import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
@@ -107,14 +108,25 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         handleIncomingIntent(intent)
     }
 
+    private fun extractFirstUrlOrTrimmed(rawText: String?): String {
+        val trimmed = rawText?.trim().orEmpty()
+        if (trimmed.isEmpty()) return ""
+        val matcher = urlInTextPattern.matcher(trimmed)
+        return if (matcher.find()) matcher.group() else trimmed
+    }
+
     private fun handleIncomingIntent(intent: Intent?) {
         if (intent?.action != Intent.ACTION_SEND || intent.type != "text/plain") return
-        val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim() ?: return
-        val matcher = urlInTextPattern.matcher(sharedText)
-        val extractedUrl = if (matcher.find()) matcher.group() else sharedText
+        val extractedUrl = extractFirstUrlOrTrimmed(intent.getStringExtra(Intent.EXTRA_TEXT))
         if (extractedUrl.isNotEmpty()) {
             openDownloadMenu(extractedUrl)
         }
+    }
+
+    private fun setupSpinnerAdapter(spinner: android.widget.Spinner, items: List<String>) {
+        val adapter = ArrayAdapter(this, R.layout.item_spinner_selected, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
     }
 
     private fun initViews() {
@@ -126,16 +138,8 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         episodeAdapter = EpisodeAdapter(this)
         binding.rvEpisodes.adapter = episodeAdapter
 
-        binding.spinnerFormat.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            arrayOf("mp4", "mkv")
-        )
-        binding.spinnerQuality.adapter = ArrayAdapter(
-            this,
-            android.R.layout.simple_spinner_dropdown_item,
-            arrayOf("1080p", "720p", "480p", "360p")
-        )
+        setupSpinnerAdapter(binding.spinnerFormat, listOf("mp4", "mkv"))
+        setupSpinnerAdapter(binding.spinnerQuality, listOf("1080p", "720p", "480p", "360p"))
 
         updateActiveDownloadsBadge()
         queueManager.addListener(downloadBadgeListener)
@@ -188,8 +192,14 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
 
         dialogBinding.tilShortcutUrl.setEndIconOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
-            if (clipText.isNullOrEmpty()) {
+            val clipText = clipboard.primaryClip
+                ?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)
+                ?.coerceToText(this)
+                ?.toString()
+                ?.let { extractFirstUrlOrTrimmed(it) }
+                .orEmpty()
+            if (clipText.isEmpty()) {
                 Toast.makeText(this, getString(R.string.clipboard_empty), Toast.LENGTH_SHORT).show()
             } else {
                 dialogBinding.etShortcutUrl.setText(clipText)
@@ -403,8 +413,14 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
 
         binding.btnPasteUrl.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val clipText = clipboard.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString()?.trim()
-            if (clipText.isNullOrEmpty()) {
+            val clipText = clipboard.primaryClip
+                ?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)
+                ?.coerceToText(this)
+                ?.toString()
+                ?.let { extractFirstUrlOrTrimmed(it) }
+                .orEmpty()
+            if (clipText.isEmpty()) {
                 Toast.makeText(this, getString(R.string.clipboard_empty), Toast.LENGTH_SHORT).show()
             } else {
                 binding.etUrl.setText(clipText)
@@ -457,10 +473,14 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun triggerAnalyzeFromInput() {
-        val url = binding.etUrl.text?.toString()?.trim() ?: ""
+        val raw = binding.etUrl.text?.toString()?.trim() ?: ""
+        val url = extractFirstUrlOrTrimmed(raw)
         if (url.isEmpty()) {
             binding.etUrl.error = getString(R.string.error_empty_url)
             return
+        }
+        if (url != raw) {
+            binding.etUrl.setText(url)
         }
         hideKeyboard()
         startAnalyze(url)
@@ -481,8 +501,24 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
                     ExtractorRouter.analyzeUrl(httpClient, url, preloadedHtml)
                 }
 
+                if (info.siteType == "youtube" && YouTubeExtractor.needsWebViewRescue(url)) {
+                    val rescued = WebViewStreamResolver.resolveYouTubeStreamsViaWebView(this@MainActivity, url, httpClient)
+                    if (isFinishing || isDestroyed) return@launch
+                    if (rescued.isNotEmpty()) {
+                        val labels = rescued.map { it.label }.distinct().toMutableList()
+                        info = info.copy(availableQualities = labels)
+                        val ytId = YouTubeExtractor.extractVideoId(url)
+                        val ep = info.studios.firstOrNull()?.players?.firstOrNull()?.episodes?.firstOrNull()
+                        if (ep != null && ep.id.startsWith("yt_fallback_") && ytId != null) {
+                            ep.id = "yt_$ytId"
+                        }
+                    }
+                }
+
                 val allEpsBefore = info.studios.flatMap { it.players }.flatMap { it.episodes }
-                val needsWebViewFallback = preloadedHtml == null && (
+                val isYoutubeResolved = info.siteType == "youtube" &&
+                    allEpsBefore.firstOrNull()?.id?.startsWith("yt_fallback_") != true
+                val needsWebViewFallback = preloadedHtml == null && !isYoutubeResolved && (
                     allEpsBefore.size <= 1 && (
                         info.title == "Онлайн Відео" ||
                             allEpsBefore.firstOrNull()?.iframeUrl == info.url ||
@@ -587,11 +623,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         }
 
         if (info.availableQualities.isNotEmpty()) {
-            binding.spinnerQuality.adapter = ArrayAdapter(
-                this,
-                android.R.layout.simple_spinner_dropdown_item,
-                info.availableQualities
-            )
+            setupSpinnerAdapter(binding.spinnerQuality, info.availableQualities)
         }
 
         val studios = info.studios
@@ -710,10 +742,12 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         }
         val candidates = collectCandidatePlayerUrls(episode)
         val fallbackUrls = candidates.filter { it != episode.iframeUrl }
+        val selectedQuality = binding.spinnerQuality.selectedItem?.toString() ?: "720p"
         val intent = Intent(this, PlayerActivity::class.java).apply {
             putExtra(PlayerActivity.EXTRA_VIDEO_URL, episode.iframeUrl)
             putExtra(PlayerActivity.EXTRA_TITLE, title)
             putExtra(PlayerActivity.EXTRA_REFERER, currentMediaInfo?.url ?: episode.iframeUrl)
+            putExtra(PlayerActivity.EXTRA_QUALITY, selectedQuality)
             if (fallbackUrls.isNotEmpty()) {
                 putStringArrayListExtra(PlayerActivity.EXTRA_FALLBACK_URLS, ArrayList(fallbackUrls))
             }
@@ -831,14 +865,28 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         folderName: String
     ): DownloadTask {
         val pageReferer = currentMediaInfo?.url ?: episode.iframeUrl
-        val candidateUrls = collectCandidatePlayerUrls(episode)
+        val rawCandidates = collectCandidatePlayerUrls(episode)
+        val desiredHeight = ExtractorUtils.extractQualityHeight(quality) ?: 1080
+        val candidateUrls = if (currentMediaInfo?.siteType == "tiktok" && rawCandidates.size > 1 && desiredHeight < 1080) {
+            listOf(rawCandidates[1]) + rawCandidates.filterIndexed { index, _ -> index != 1 }
+        } else {
+            rawCandidates
+        }
 
         var chosenStream: ua.aniua.downloader.model.StreamQuality? = null
         var chosenTargetUrl = episode.iframeUrl
 
         for (targetUrl in candidateUrls) {
             var streams = GenericPlayerResolver.resolvePlayerStreams(httpClient, targetUrl, pageReferer)
-            if (streams.isEmpty() && !ExtractorUtils.isDirectMediaUrl(targetUrl)) {
+            if (YouTubeExtractor.isYouTubeUrl(targetUrl)) {
+                val maxResolvedHeight = streams.maxOfOrNull { it.height } ?: 0
+                if (streams.isEmpty() || (desiredHeight > 360 && maxResolvedHeight <= 360 && YouTubeExtractor.needsWebViewRescue(targetUrl))) {
+                    val rescued = WebViewStreamResolver.resolveYouTubeStreamsViaWebView(this@MainActivity, targetUrl, httpClient)
+                    if (rescued.isNotEmpty()) {
+                        streams = rescued
+                    }
+                }
+            } else if (streams.isEmpty() && !ExtractorUtils.isDirectMediaUrl(targetUrl)) {
                 streams = WebViewStreamResolver.resolveStreamViaWebView(this@MainActivity, targetUrl, pageReferer)
             }
             if (streams.isNotEmpty()) {
@@ -850,6 +898,15 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
 
         val streamUrl = chosenStream?.url ?: chosenTargetUrl
         val referer = chosenStream?.headers?.get("Referer") ?: pageReferer
+        val effectiveFormat = if (format.equals("mp4", ignoreCase = true) &&
+            chosenStream != null &&
+            !chosenStream.isHls &&
+            ExtractorUtils.isWebmStreamUrl(streamUrl)
+        ) {
+            "webm"
+        } else {
+            format
+        }
 
         return DownloadTask(
             id = UUID.randomUUID().toString(),
@@ -861,8 +918,11 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
             streamUrl = streamUrl,
             referer = referer,
             quality = quality,
-            format = format,
-            folderName = folderName
+            format = effectiveFormat,
+            folderName = folderName,
+            audioUrl = chosenStream?.audioUrl,
+            isSingle = isSingle,
+            headers = chosenStream?.headers?.toMutableMap() ?: mutableMapOf()
         )
     }
 

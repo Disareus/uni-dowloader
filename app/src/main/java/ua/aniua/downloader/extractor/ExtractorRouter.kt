@@ -16,12 +16,12 @@ object ExtractorRouter {
 
         // 2. TikTok (Відео, кліпи, короткі посилання vm.tiktok / vt.tiktok)
         if (TikTokExtractor.isTikTokUrl(cleanUrl)) {
-            return TikTokExtractor.parseVideo(client, cleanUrl)
+            return TikTokExtractor.parseVideo(client, cleanUrl, preloadedHtml)
         }
 
         // 3. Instagram (Reels, пости, IGTV, share посилання)
         if (InstagramExtractor.isInstagramUrl(cleanUrl)) {
-            return InstagramExtractor.parseVideo(client, cleanUrl)
+            return InstagramExtractor.parseVideo(client, cleanUrl, preloadedHtml)
         }
 
         // 4. UAKino (Фільми, серіали, аніме)

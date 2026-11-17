@@ -2,6 +2,7 @@ package ua.aniua.downloader.extractor
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -15,9 +16,12 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.OkHttpClient
 import ua.aniua.downloader.model.StreamQuality
 import java.util.Collections
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 
 /**
@@ -52,10 +56,9 @@ object WebViewStreamResolver {
         val lower = url.lowercase(Locale.ROOT)
         if (!lower.startsWith("http://") && !lower.startsWith("https://")) return false
         if (lower.contains("doubleclick") || lower.contains("googlesyndication") || lower.contains("analytics")) return false
+        if (ExtractorUtils.isImageUrl(url)) return false
         val cleanPath = lower.substringBefore("?").substringBefore("#")
-        if (cleanPath.endsWith(".jpg") || cleanPath.endsWith(".jpeg") || cleanPath.endsWith(".png") ||
-            cleanPath.endsWith(".webp") || cleanPath.endsWith(".gif") || cleanPath.endsWith(".svg") ||
-            cleanPath.endsWith(".css") || cleanPath.endsWith(".js") || cleanPath.endsWith(".ts") ||
+        if (cleanPath.endsWith(".css") || cleanPath.endsWith(".js") || cleanPath.endsWith(".ts") ||
             cleanPath.endsWith(".m4s") || cleanPath.endsWith(".vtt") || cleanPath.endsWith(".srt")
         ) {
             return false
@@ -89,6 +92,7 @@ object WebViewStreamResolver {
                 }
 
                 cont.invokeOnCancellation {
+                    finished = true
                     mainHandler.post { cleanup() }
                 }
 
@@ -118,8 +122,8 @@ object WebViewStreamResolver {
                                 if (isChallenge) {
                                     mainHandler.postDelayed({
                                         if (finished) return@postDelayed
-                                        view.evaluateJavascript("(function(){return document.documentElement ? document.documentElement.outerHTML : '';})();") { raw2 ->
-                                            if (finished) return@evaluateJavascript
+                                        view.evaluateJavascript("(function(){return document.documentElement ? document.documentElement.outerHTML : '';})();") innerEval@{ raw2 ->
+                                            if (finished) return@innerEval
                                             finished = true
                                             val html2 = unescapeEvalResult(raw2).ifEmpty { html }
                                             val finalUrl2 = view.url ?: currentUrl
@@ -289,8 +293,202 @@ object WebViewStreamResolver {
         } ?: emptyList()
     }
 
+    private data class YouTubeWebContext(
+        val poToken: String,
+        val visitorData: String,
+        val signatureTimestamp: Int?,
+        val clientVersion: String?,
+        val cookieHeader: String?
+    )
+
+    suspend fun resolveYouTubeStreamsViaWebView(
+        context: Context,
+        pageUrl: String,
+        client: OkHttpClient,
+        timeoutMs: Long = 14000L
+    ): List<StreamQuality> {
+        val videoId = YouTubeExtractor.extractVideoId(pageUrl) ?: return emptyList()
+        val watchUrl = "https://m.youtube.com/watch?v=$videoId"
+
+        val webCtx = withContext(Dispatchers.Main) {
+            withTimeoutOrNull(timeoutMs) {
+                suspendCancellableCoroutine<YouTubeWebContext?> { cont ->
+                    val mainHandler = Handler(Looper.getMainLooper())
+                    val completed = AtomicBoolean(false)
+                    val capturedPot = AtomicReference<String?>(null)
+                    val capturedVisitorData = AtomicReference<String?>(null)
+                    val capturedSts = AtomicReference<Int?>(null)
+                    val capturedClientVer = AtomicReference<String?>(null)
+                    var pollRunnable: Runnable? = null
+
+                    val webView = createConfiguredWebView(context, YouTubeExtractor.MWEB_USER_AGENT).apply {
+                        measure(
+                            android.view.View.MeasureSpec.makeMeasureSpec(1080, android.view.View.MeasureSpec.EXACTLY),
+                            android.view.View.MeasureSpec.makeMeasureSpec(1920, android.view.View.MeasureSpec.EXACTLY)
+                        )
+                        layout(0, 0, 1080, 1920)
+                    }
+
+                    fun cleanup() {
+                        pollRunnable?.let { mainHandler.removeCallbacks(it) }
+                        pollRunnable = null
+                        try {
+                            CookieManager.getInstance().flush()
+                        } catch (_: Throwable) {}
+                        try {
+                            webView.stopLoading()
+                            webView.destroy()
+                        } catch (_: Throwable) {}
+                    }
+
+                    fun tryFinishIfReady() {
+                        val pot = capturedPot.get()
+                        val vd = capturedVisitorData.get()
+                        if (pot.isNullOrBlank() || vd.isNullOrBlank()) return
+                        if (!completed.compareAndSet(false, true)) return
+                        val cookie = ExtractorUtils.getCookieHeader(watchUrl)
+                        val result = YouTubeWebContext(
+                            poToken = pot,
+                            visitorData = vd,
+                            signatureTimestamp = capturedSts.get(),
+                            clientVersion = capturedClientVer.get(),
+                            cookieHeader = cookie
+                        )
+                        mainHandler.post {
+                            cleanup()
+                            if (cont.isActive) cont.resume(result)
+                        }
+                    }
+
+                    cont.invokeOnCancellation {
+                        completed.set(true)
+                        mainHandler.post { cleanup() }
+                    }
+
+                    webView.webViewClient = object : WebViewClient() {
+                        override fun shouldInterceptRequest(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): WebResourceResponse? {
+                            if (completed.get()) return null
+                            val reqUrl = request?.url?.toString() ?: return null
+                            if (reqUrl.contains("googlevideo.com/videoplayback", ignoreCase = true)) {
+                                val pot = try {
+                                    Uri.parse(reqUrl).getQueryParameter("pot")
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                if (!pot.isNullOrBlank()) {
+                                    capturedPot.compareAndSet(null, pot)
+                                    tryFinishIfReady()
+                                }
+                            }
+                            return null
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            if (completed.get()) return
+                            pollRunnable?.let { mainHandler.removeCallbacks(it) }
+                            var attempt = 0
+                            val checker = object : Runnable {
+                                override fun run() {
+                                    if (completed.get()) return
+                                    attempt++
+                                    view?.evaluateJavascript(
+                                        """(function(){
+                                            try {
+                                                if (!window.__aniUaPotHooked && window.fetch) {
+                                                    window.__aniUaPotHooked = true;
+                                                    var origFetch = window.fetch;
+                                                    window.fetch = function() {
+                                                        try {
+                                                            var req = arguments[0];
+                                                            var init = arguments[1];
+                                                            var u = (typeof req === 'string') ? req : (req && req.url ? req.url : '');
+                                                            if (u.indexOf('/youtubei/v1/player') !== -1 && init && typeof init.body === 'string') {
+                                                                var parsed = JSON.parse(init.body);
+                                                                if (parsed && parsed.serviceIntegrityDimensions && parsed.serviceIntegrityDimensions.poToken) {
+                                                                    window.__aniUaCapturedPot = parsed.serviceIntegrityDimensions.poToken;
+                                                                }
+                                                            }
+                                                        } catch(e) {}
+                                                        return origFetch.apply(this, arguments);
+                                                    };
+                                                }
+                                                var btns = document.querySelectorAll('.player-control-play-pause-icon, .ytp-play-button, .ytp-large-play-button, button[aria-label*="Play"], button[aria-label*="Відтворити"]');
+                                                for (var bi = 0; bi < btns.length; bi++) {
+                                                    try { btns[bi].click(); } catch(e) {}
+                                                }
+                                                var v = document.querySelector('video');
+                                                if (v) { v.muted = true; if (v.paused) { v.play().catch(function(){}); } }
+                                                var p = document.getElementById('movie_player');
+                                                if (p) {
+                                                    if (p.mute) p.mute();
+                                                    if (p.playVideo) p.playVideo();
+                                                }
+                                                var cfg = window.ytcfg;
+                                                var vd = cfg && cfg.get ? (cfg.get('VISITOR_DATA') || '') : '';
+                                                var sts = cfg && cfg.get ? (cfg.get('STS') || 0) : 0;
+                                                var ver = cfg && cfg.get ? (cfg.get('INNERTUBE_CLIENT_VERSION') || '') : '';
+                                                var pot = window.__aniUaCapturedPot || '';
+                                                return JSON.stringify({vd: vd, sts: sts, ver: ver, pot: pot});
+                                            } catch(e) { return '{}'; }
+                                        })();""".trimIndent()
+                                    ) { raw ->
+                                        if (completed.get()) return@evaluateJavascript
+                                        val jsonStr = unescapeEvalResult(raw)
+                                        try {
+                                            val obj = JsonParser.parseString(jsonStr).asJsonObject
+                                            val vd = obj.get("vd")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                                            val sts = obj.get("sts")?.takeIf { it.isJsonPrimitive }?.asInt
+                                            val ver = obj.get("ver")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                                            val pot = obj.get("pot")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                                            if (!vd.isNullOrBlank()) capturedVisitorData.compareAndSet(null, vd)
+                                            if (sts != null && sts > 0) capturedSts.compareAndSet(null, sts)
+                                            if (!ver.isNullOrBlank()) capturedClientVer.compareAndSet(null, ver)
+                                            if (!pot.isNullOrBlank()) capturedPot.compareAndSet(null, pot)
+                                        } catch (_: Exception) {}
+
+                                        tryFinishIfReady()
+                                        if (!completed.get()) {
+                                            if (attempt < 14) {
+                                                mainHandler.postDelayed(this, 750L)
+                                            } else if (completed.compareAndSet(false, true)) {
+                                                cleanup()
+                                                if (cont.isActive) cont.resume(null)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            pollRunnable = checker
+                            mainHandler.postDelayed(checker, 600L)
+                        }
+                    }
+
+                    webView.loadUrl(watchUrl)
+                }
+            }
+        } ?: return emptyList()
+
+        return withContext(Dispatchers.IO) {
+            YouTubeExtractor.resolveWithMwebPoToken(
+                client = client,
+                pageUrl = pageUrl,
+                poToken = webCtx.poToken,
+                visitorData = webCtx.visitorData,
+                signatureTimestamp = webCtx.signatureTimestamp,
+                clientVersion = webCtx.clientVersion,
+                cookieHeader = webCtx.cookieHeader
+            )
+        }
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createConfiguredWebView(context: Context): WebView {
+    private fun createConfiguredWebView(
+        context: Context,
+        userAgent: String = ExtractorUtils.DEFAULT_UA
+    ): WebView {
         val webView = WebView(context.applicationContext ?: context)
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
@@ -302,7 +500,7 @@ object WebViewStreamResolver {
             databaseEnabled = true
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_DEFAULT
-            userAgentString = ExtractorUtils.DEFAULT_UA
+            userAgentString = userAgent
         }
         return webView
     }

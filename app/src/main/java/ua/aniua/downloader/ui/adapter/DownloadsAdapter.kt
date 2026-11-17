@@ -59,7 +59,11 @@ class DownloadsAdapter(
         val b = holder.binding
         val ctx = b.root.context
 
-        b.tvDlTitle.text = "${task.mediaTitle} - С${task.episodeNumber} [${task.quality}]"
+        b.tvDlTitle.text = if (task.isSingle) {
+            "${task.mediaTitle} [${task.quality}]"
+        } else {
+            "${task.mediaTitle} - С${task.episodeNumber} [${task.quality}]"
+        }
         b.tvDlSubtitle.text = buildString {
             if (task.studioName.isNotEmpty() && task.studioName != "Оригінал") {
                 append(task.studioName)

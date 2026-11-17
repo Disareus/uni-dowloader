@@ -22,5 +22,8 @@ data class DownloadTask(
     var totalBytes: Long = 0L,
     var savedFilePath: String? = null,
     var errorMessage: String? = null,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    var audioUrl: String? = null,
+    var isSingle: Boolean = false,
+    var headers: MutableMap<String, String> = mutableMapOf()
 ) : Serializable

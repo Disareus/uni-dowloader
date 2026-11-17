@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.view.MenuItem
 import android.view.View
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.SimpleItemAnimator
 import ua.aniua.downloader.databinding.ActivityDownloadsBinding
@@ -66,14 +67,16 @@ class DownloadsActivity : AppCompatActivity(), DownloadsAdapter.OnDownloadAction
 
     override fun onRetry(task: DownloadTask) {
         queueManager.retryTask(task.id)
+        ContextCompat.startForegroundService(this, Intent(this, ua.aniua.downloader.service.DownloadService::class.java))
     }
 
     override fun onPlay(task: DownloadTask) {
         val path = task.savedFilePath ?: return
         val uriString = if (path.startsWith("/")) "file://$path" else path
+        val displayTitle = if (task.isSingle) task.mediaTitle else "${task.mediaTitle} - Серія ${task.episodeNumber}"
         val intent = Intent(this, PlayerActivity::class.java).apply {
             putExtra(PlayerActivity.EXTRA_VIDEO_URL, uriString)
-            putExtra(PlayerActivity.EXTRA_TITLE, "${task.mediaTitle} - Серія ${task.episodeNumber}")
+            putExtra(PlayerActivity.EXTRA_TITLE, displayTitle)
         }
         startActivity(intent)
     }

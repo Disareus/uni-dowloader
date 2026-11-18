@@ -193,6 +193,7 @@ object PeerTubeExtractor {
         var title = "PeerTube Відео"
         var description: String? = null
         var posterUrl: String? = null
+        var apiResolved = false
 
         try {
             val apiReq = Request.Builder()
@@ -204,10 +205,14 @@ object PeerTubeExtractor {
             val bodyStr = ExtractorUtils.executeForString(client, apiReq)
             if (!bodyStr.isNullOrEmpty()) {
                 val root = JsonParser.parseString(bodyStr).asJsonObject
-                title = root.get("name")?.asString ?: title
-                description = root.get("description")?.asString
+                if (root.has("name") || root.has("uuid")) {
+                    apiResolved = true
+                }
+                title = root.get("name")?.takeIf { it.isJsonPrimitive }?.asString ?: title
+                description = root.get("description")?.takeIf { it.isJsonPrimitive }?.asString
 
-                val previewPath = root.get("previewPath")?.asString ?: root.get("thumbnailPath")?.asString
+                val previewPath = root.get("previewPath")?.takeIf { it.isJsonPrimitive }?.asString
+                    ?: root.get("thumbnailPath")?.takeIf { it.isJsonPrimitive }?.asString
                 if (!previewPath.isNullOrEmpty()) {
                     posterUrl = if (previewPath.startsWith("http")) previewPath else "$host$previewPath"
                 }
@@ -215,6 +220,9 @@ object PeerTubeExtractor {
         } catch (ignored: Exception) {}
 
         val streams = extractStreams(client, pageUrl, pageUrl)
+        if (!apiResolved && streams.isEmpty() && !host.contains("peertube", ignoreCase = true)) {
+            return null
+        }
         val studio = DubStudio("peertube_studio", "PeerTube")
         val player = PlayerSource("peertube_player", "PeerTube")
         player.episodes.add(EpisodeItem("peertube_ep_1", "1", title, "1", pageUrl))

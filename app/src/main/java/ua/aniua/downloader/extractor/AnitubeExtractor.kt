@@ -17,11 +17,12 @@ object AnitubeExtractor {
         val normalizedPageUrl = ExtractorUtils.ensureHttpsScheme(pageUrl)
         val baseOrigin = ExtractorUtils.extractBaseOrigin(normalizedPageUrl, "https://anitube.in.ua")
 
-        val request = Request.Builder()
+        val reqBuilder = Request.Builder()
             .url(normalizedPageUrl)
             .header("User-Agent", ExtractorUtils.DEFAULT_UA)
             .header("Referer", "$baseOrigin/")
-            .build()
+        ExtractorUtils.getCookieHeader(normalizedPageUrl)?.let { reqBuilder.header("Cookie", it) }
+        val request = reqBuilder.build()
 
         val html = client.newCall(request).execute().use { response ->
             if (!response.isSuccessful || response.body == null) {

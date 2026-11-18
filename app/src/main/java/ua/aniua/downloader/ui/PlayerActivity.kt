@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.Color
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -71,6 +72,8 @@ class PlayerActivity : AppCompatActivity() {
     private val playbackQueue = ArrayDeque<StreamQuality>()
     private val pendingResolveUrls = ArrayDeque<String>()
     private val attemptedStreamKeys = mutableSetOf<String>()
+    private val queuedStreamKeys = mutableSetOf<String>()
+    private var isResolvingNext = false
     private var triedYouTubeFallback = false
     private var lastErrorMessage: String? = null
 
@@ -115,53 +118,60 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private suspend fun resolveMoreAndStartPlayback() {
-        while (playbackQueue.isEmpty() && pendingResolveUrls.isNotEmpty()) {
-            val candidate = pendingResolveUrls.removeFirst()
-            val resolved = resolveStreamsForCandidate(candidate)
-            for (stream in resolved) {
-                enqueueIfUnattempted(stream)
-            }
-        }
-
-        if (playbackQueue.isEmpty() && !triedYouTubeFallback) {
-            val ytCandidate = candidateUrls.firstOrNull { YouTubeExtractor.isYouTubeUrl(it) }
-            if (ytCandidate != null) {
-                triedYouTubeFallback = true
-                val fallbacks = withContext(Dispatchers.IO) {
-                    YouTubeExtractor.invalidateCache(ytCandidate)
-                    YouTubeExtractor.resolveFallbackStreams(httpClient, ytCandidate)
-                }
-                for (stream in orderStreamsForPlayback(fallbacks, desiredQuality)) {
+        if (isResolvingNext) return
+        isResolvingNext = true
+        try {
+            while (playbackQueue.isEmpty() && pendingResolveUrls.isNotEmpty()) {
+                val candidate = pendingResolveUrls.removeFirst()
+                val resolved = resolveStreamsForCandidate(candidate)
+                for (stream in resolved) {
                     enqueueIfUnattempted(stream)
                 }
             }
-        }
 
-        if (isFinishing || isDestroyed) return
+            if (playbackQueue.isEmpty() && !triedYouTubeFallback) {
+                val ytCandidate = candidateUrls.firstOrNull { YouTubeExtractor.isYouTubeUrl(it) }
+                if (ytCandidate != null) {
+                    triedYouTubeFallback = true
+                    val fallbacks = withContext(Dispatchers.IO) {
+                        YouTubeExtractor.invalidateCache(ytCandidate)
+                        YouTubeExtractor.resolveFallbackStreams(httpClient, ytCandidate)
+                    }
+                    for (stream in orderStreamsForPlayback(fallbacks, desiredQuality)) {
+                        enqueueIfUnattempted(stream)
+                    }
+                }
+            }
 
-        val nextStream = playbackQueue.removeFirstOrNull()
-        if (nextStream != null) {
-            val effectiveReferer = nextStream.headers["Referer"] ?: pageReferer
-            initPlayer(
-                nextStream.url,
-                effectiveReferer,
-                nextStream.headers,
-                nextStream.isHls,
-                nextStream.audioUrl
-            )
-            return
-        }
+            if (isFinishing || isDestroyed) return
 
-        // Якщо жоден прямий відеопотік не вдалося відтворити через ExoPlayer, пробуємо веб-плеєр (лише для embed-сторінок)
-        val webCandidates = buildWebFallbackCandidates()
-        if (webCandidates.isNotEmpty()) {
-            initWebPlayerFallback(webCandidates, pageReferer)
-        } else {
-            binding.playerLoading.visibility = View.GONE
-            val errorText = lastErrorMessage?.let { "Помилка відтворення: $it" }
-                ?: "Не вдалося знайти робочий відеопотік у плеєрі"
-            Toast.makeText(this@PlayerActivity, errorText, Toast.LENGTH_LONG).show()
-            finish()
+            val nextStream = playbackQueue.removeFirstOrNull()
+            if (nextStream != null) {
+                queuedStreamKeys.remove("${nextStream.url}|${nextStream.audioUrl.orEmpty()}")
+                val effectiveReferer = nextStream.headers["Referer"] ?: pageReferer
+                initPlayer(
+                    nextStream.url,
+                    effectiveReferer,
+                    nextStream.headers,
+                    nextStream.isHls,
+                    nextStream.audioUrl
+                )
+                return
+            }
+
+            // Якщо жоден прямий відеопотік не вдалося відтворити через ExoPlayer, пробуємо веб-плеєр (лише для embed-сторінок)
+            val webCandidates = buildWebFallbackCandidates()
+            if (webCandidates.isNotEmpty()) {
+                initWebPlayerFallback(webCandidates, pageReferer)
+            } else {
+                binding.playerLoading.visibility = View.GONE
+                val errorText = lastErrorMessage?.let { "Помилка відтворення: $it" }
+                    ?: "Не вдалося знайти робочий відеопотік у плеєрі"
+                Toast.makeText(this@PlayerActivity, errorText, Toast.LENGTH_LONG).show()
+                finish()
+            }
+        } finally {
+            isResolvingNext = false
         }
     }
 
@@ -227,7 +237,7 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun enqueueIfUnattempted(stream: StreamQuality) {
         val key = "${stream.url}|${stream.audioUrl.orEmpty()}"
-        if (!attemptedStreamKeys.contains(key)) {
+        if (!attemptedStreamKeys.contains(key) && queuedStreamKeys.add(key)) {
             playbackQueue.addLast(stream)
         }
     }
@@ -266,10 +276,13 @@ class PlayerActivity : AppCompatActivity() {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            setGeolocationEnabled(false)
             mediaPlaybackRequiresUserGesture = false
             useWideViewPort = true
             loadWithOverviewMode = true
-            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             setSupportMultipleWindows(false)
             userAgentString = ExtractorUtils.DEFAULT_UA
         }
@@ -438,8 +451,11 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         releasePlayer()
-        binding.playerWebview.destroy()
+        val wv = binding.playerWebview
+        wv.stopLoading()
+        (wv.parent as? ViewGroup)?.removeView(wv)
+        wv.destroy()
+        super.onDestroy()
     }
 }

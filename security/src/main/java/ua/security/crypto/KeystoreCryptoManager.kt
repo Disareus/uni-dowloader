@@ -113,6 +113,7 @@ class KeystoreCryptoManager private constructor(private val keyAlias: String) {
         keyGenerator.generateKey()
     }
 
+    @Synchronized
     private fun getSecretKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE)
         keyStore.load(null)
@@ -128,12 +129,13 @@ class KeystoreCryptoManager private constructor(private val keyAlias: String) {
     @Throws(GeneralSecurityException::class, IOException::class)
     fun encrypt(plaintext: ByteArray, aad: ByteArray?): ByteArray {
         val secretKey = getSecretKey()
-        val iv = ByteArray(GCM_IV_LENGTH_BYTES)
-        secureRandom.nextBytes(iv)
-
         val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
-        val spec = GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv)
-        cipher.init(Cipher.ENCRYPT_MODE, secretKey, spec)
+        // AndroidKeyStore keys with randomizedEncryptionRequired(true) must generate IV internally
+        cipher.init(Cipher.ENCRYPT_MODE, secretKey)
+        val iv = cipher.iv
+        if (iv == null || iv.size != GCM_IV_LENGTH_BYTES) {
+            throw GeneralSecurityException("Некоректна довжина IV, згенерованого Keystore")
+        }
 
         if (aad != null && aad.isNotEmpty()) {
             cipher.updateAAD(aad)

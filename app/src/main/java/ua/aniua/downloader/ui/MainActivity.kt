@@ -11,6 +11,7 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.LayoutInflater
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.webkit.CookieManager
@@ -30,7 +31,9 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import com.bumptech.glide.Glide
 import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -73,6 +76,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     private var currentPlayer: PlayerSource? = null
     private var allSelected = false
     private var isDescExpanded = false
+    private var analyzeJob: Job? = null
 
     private val interceptedBrowserMediaUrls = java.util.Collections.synchronizedList(mutableListOf<String>())
 
@@ -241,11 +245,16 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun openBrowserUrl(url: String, title: String? = null) {
+        val safeUrl = ExtractorUtils.ensureHttpsScheme(url)
+        if (!safeUrl.startsWith("https://", ignoreCase = true) && !safeUrl.startsWith("http://", ignoreCase = true)) {
+            Toast.makeText(this, getString(R.string.shortcut_error_invalid_url), Toast.LENGTH_SHORT).show()
+            return
+        }
         binding.scrollDownloader.visibility = View.GONE
         binding.cardBottomDownloadBar.visibility = View.GONE
         binding.layoutBrowser.visibility = View.VISIBLE
-        binding.toolbar.title = title ?: url
-        binding.webviewShortcut.loadUrl(url)
+        binding.toolbar.title = title ?: safeUrl
+        binding.webviewShortcut.loadUrl(safeUrl)
     }
 
     private fun closeBrowser() {
@@ -268,6 +277,10 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            setGeolocationEnabled(false)
             useWideViewPort = true
             loadWithOverviewMode = true
             cacheMode = WebSettings.LOAD_DEFAULT
@@ -287,7 +300,8 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                return false
+                val scheme = request?.url?.scheme?.lowercase()
+                return scheme != "http" && scheme != "https"
             }
 
             override fun shouldInterceptRequest(view: WebView?, request: WebResourceRequest?): WebResourceResponse? {
@@ -492,10 +506,11 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun startAnalyze(url: String, preloadedHtml: String? = null) {
+        analyzeJob?.cancel()
         binding.btnAnalyze.isEnabled = false
         binding.progressAnalyze.visibility = View.VISIBLE
 
-        lifecycleScope.launch {
+        analyzeJob = lifecycleScope.launch {
             try {
                 var info = withContext(Dispatchers.IO) {
                     ExtractorRouter.analyzeUrl(httpClient, url, preloadedHtml)
@@ -567,6 +582,8 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
                 binding.btnAnalyze.isEnabled = true
                 binding.progressAnalyze.visibility = View.GONE
                 displayMediaInfo(info)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 binding.btnAnalyze.isEnabled = true
                 binding.progressAnalyze.visibility = View.GONE
@@ -679,6 +696,11 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
                 binding.containerPlayersBar.visibility = View.GONE
                 selectPlayer(players[0])
             }
+        } else {
+            binding.containerPlayersBar.visibility = View.GONE
+            currentPlayer = null
+            episodeAdapter.setEpisodes(emptyList())
+            updateBottomBarVisibility()
         }
     }
 
@@ -812,8 +834,23 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
             val singleEp = currentPlayer?.episodes?.firstOrNull()
                 ?: currentMediaInfo?.studios?.firstOrNull()?.players?.firstOrNull()?.episodes?.firstOrNull()
             if (singleEp != null) {
-                onSingleDownload(singleEp)
-                startActivity(Intent(this, DownloadsActivity::class.java))
+                val quality = binding.spinnerQuality.selectedItem?.toString() ?: "1080p"
+                val format = binding.spinnerFormat.selectedItem?.toString() ?: "mp4"
+                val studioName = currentStudio?.name ?: "Оригінал"
+                val mediaTitle = currentMediaInfo?.title ?: "Відео"
+                val animeFolder = resolveFolderName(true, mediaTitle, studioName)
+                lifecycleScope.launch {
+                    try {
+                        val task = withContext(Dispatchers.IO) {
+                            buildDownloadTask(singleEp, mediaTitle, studioName, true, quality, format, animeFolder)
+                        }
+                        startDownloadService(task)
+                        Toast.makeText(this@MainActivity, "Додано до черги: $mediaTitle", Toast.LENGTH_SHORT).show()
+                        startActivity(Intent(this@MainActivity, DownloadsActivity::class.java))
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "Помилка завантаження: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
                 return
             }
         }
@@ -946,8 +983,12 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     override fun onDestroy() {
+        analyzeJob?.cancel()
         queueManager.removeListener(downloadBadgeListener)
-        binding.webviewShortcut.destroy()
+        val wv = binding.webviewShortcut
+        wv.stopLoading()
+        (wv.parent as? ViewGroup)?.removeView(wv)
+        wv.destroy()
         super.onDestroy()
     }
 }

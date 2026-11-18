@@ -41,7 +41,14 @@ class DownloadQueueManager private constructor(context: Context) {
         }
     }
 
-    fun getAllTasks(): List<DownloadTask> = tasks.values.map { it.copy() }.sortedByDescending { it.createdAt }
+    private fun snapshotTask(task: DownloadTask): DownloadTask {
+        val headersCopy = synchronized(task.headers) {
+            LinkedHashMap(task.headers)
+        }
+        return task.copy(headers = headersCopy)
+    }
+
+    fun getAllTasks(): List<DownloadTask> = tasks.values.map { snapshotTask(it) }.sortedByDescending { it.createdAt }
 
     fun getActiveCount(): Int = tasks.values.count {
         it.state == DownloadState.PENDING || it.state == DownloadState.DOWNLOADING
@@ -56,7 +63,7 @@ class DownloadQueueManager private constructor(context: Context) {
     }
 
     private fun notifyUpdate(task: DownloadTask) {
-        val snapshot = task.copy()
+        val snapshot = snapshotTask(task)
         mainHandler.post {
             for (listener in listeners) {
                 listener(snapshot)
@@ -64,12 +71,18 @@ class DownloadQueueManager private constructor(context: Context) {
         }
     }
 
-    fun enqueueDownload(task: DownloadTask) {
-        task.state = DownloadState.PENDING
-        task.progress = 0f
-        task.speed = ""
-        task.eta = ""
-        task.errorMessage = null
+    fun enqueueDownload(rawTask: DownloadTask) {
+        // Cancel any previously running worker for the same task id and work on a fresh copy
+        cancelTokens[rawTask.id]?.set(true)
+        val task = snapshotTask(rawTask).apply {
+            state = DownloadState.PENDING
+            progress = 0f
+            speed = ""
+            eta = ""
+            downloadedBytes = 0L
+            totalBytes = 0L
+            errorMessage = null
+        }
 
         tasks[task.id] = task
         val cancelToken = AtomicBoolean(false)
@@ -109,16 +122,24 @@ class DownloadQueueManager private constructor(context: Context) {
                         task.mediaTitle == task.episodeTitle
                     ))
 
+                val safeQuality = downloadSecurity.sanitizeFileName(task.quality.ifBlank { "720p" })
+                val safeFormat = when (task.format.trim().lowercase(java.util.Locale.ROOT)) {
+                    "mkv" -> "mkv"
+                    "webm" -> "webm"
+                    else -> "mp4"
+                }
+                val rawSafeEp = downloadSecurity.sanitizeFileName(task.episodeNumber.ifBlank { "1" })
+                val safeEp = if (rawSafeEp.length == 1 && rawSafeEp[0].isDigit()) "0$rawSafeEp" else rawSafeEp
+
                 val fileName = if (isSingleVideo) {
-                    "$safeTitle [${task.quality}].${task.format}"
+                    "$safeTitle [$safeQuality].$safeFormat"
                 } else {
-                    val safeEp = if (task.episodeNumber.length == 1) "0${task.episodeNumber}" else task.episodeNumber
-                    "$safeTitle - Серія $safeEp [${task.quality}].${task.format}"
+                    "$safeTitle - Серія $safeEp [$safeQuality].$safeFormat"
                 }
 
-                val mimeType = when {
-                    task.format.equals("mkv", ignoreCase = true) -> "video/x-matroska"
-                    task.format.equals("webm", ignoreCase = true) -> "video/webm"
+                val mimeType = when (safeFormat) {
+                    "mkv" -> "video/x-matroska"
+                    "webm" -> "video/webm"
                     else -> "video/mp4"
                 }
                 contentUri = downloadSecurity.createScopedVideoUri(fileName, mimeType, folderToUse)

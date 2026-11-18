@@ -219,8 +219,9 @@ object InstagramExtractor {
         lsd: String
     ): MediaInfo? {
         return try {
+            val variablesJson = JsonObject().apply { addProperty("shortcode", shortcode) }.toString()
             val form = FormBody.Builder()
-                .add("variables", "{\"shortcode\":\"$shortcode\"}")
+                .add("variables", variablesJson)
                 .add("doc_id", "8845758582119845")
                 .add("lsd", lsd)
                 .build()

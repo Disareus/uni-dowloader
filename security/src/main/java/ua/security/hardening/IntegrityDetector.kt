@@ -46,6 +46,10 @@ class IntegrityDetector(context: Context) {
 
     fun verifyApkSignature(): Boolean {
         val currentSha256 = getCurrentSignatureSha256() ?: return false
+        if (!ObfuscatedSecrets.isCertPinConfigured()) {
+            // Release certificate fingerprint is not pinned yet; ensure a valid signature exists
+            return currentSha256.isNotEmpty()
+        }
         val expectedSha256 = ObfuscatedSecrets.getExpectedCertSha256()
         return currentSha256.equals(expectedSha256, ignoreCase = true)
     }

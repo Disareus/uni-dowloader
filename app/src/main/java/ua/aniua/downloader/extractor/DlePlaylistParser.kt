@@ -9,6 +9,7 @@ import ua.aniua.downloader.model.DubStudio
 import ua.aniua.downloader.model.EpisodeItem
 import ua.aniua.downloader.model.PlayerSource
 import java.net.URI
+import java.net.URLEncoder
 import java.util.Locale
 import java.util.regex.Pattern
 
@@ -63,9 +64,11 @@ object DlePlaylistParser {
         userHash: String?,
         referer: String
     ): List<DubStudio> {
-        var ajaxUrl = "$baseOrigin/engine/ajax/playlists.php?news_id=$newsId&xfield=$xfield"
+        val encNewsId = URLEncoder.encode(newsId, "UTF-8")
+        val encXfield = URLEncoder.encode(xfield, "UTF-8")
+        var ajaxUrl = "$baseOrigin/engine/ajax/playlists.php?news_id=$encNewsId&xfield=$encXfield"
         if (!userHash.isNullOrEmpty()) {
-            ajaxUrl += "&user_hash=$userHash"
+            ajaxUrl += "&user_hash=${URLEncoder.encode(userHash, "UTF-8")}"
         }
 
         return try {

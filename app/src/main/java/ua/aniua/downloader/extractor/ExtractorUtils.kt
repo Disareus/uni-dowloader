@@ -54,6 +54,32 @@ internal object ExtractorUtils {
         }
     }
 
+    fun extractHost(url: String?): String {
+        if (url.isNullOrBlank()) return ""
+        return try {
+            URI(ensureHttpsScheme(url)).host?.lowercase(Locale.ROOT)?.removePrefix("www.") ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    /**
+     * Checks whether two URLs share the same host or parent domain so WebView cookies
+     * from a referer page are never leaked to unrelated third-party domains.
+     */
+    fun isSameSiteForCookies(targetUrl: String?, refererUrl: String?): Boolean {
+        val h1 = extractHost(targetUrl)
+        val h2 = extractHost(refererUrl)
+        if (h1.isEmpty() || h2.isEmpty()) return false
+        if (h1 == h2) return true
+        val p1 = h1.split('.')
+        val p2 = h2.split('.')
+        if (p1.size < 2 || p2.size < 2) return false
+        val root1 = "${p1[p1.size - 2]}.${p1[p1.size - 1]}"
+        val root2 = "${p2[p2.size - 2]}.${p2[p2.size - 1]}"
+        return root1 == root2
+    }
+
     fun getCookieHeader(url: String?): String? {
         if (url.isNullOrBlank()) return null
         return try {
@@ -220,7 +246,8 @@ internal object ExtractorUtils {
                 headers["Origin"] = origin
             }
         }
-        val cookie = getCookieHeader(streamUrl) ?: getCookieHeader(referer)
+        val cookie = getCookieHeader(streamUrl)
+            ?: if (isSameSiteForCookies(streamUrl, referer)) getCookieHeader(referer) else null
         if (!cookie.isNullOrBlank()) {
             headers["Cookie"] = cookie
         }

@@ -31,8 +31,13 @@ object MoonAnimeExtractor {
     private val MOONCDN_PATH_PATTERN = Pattern.compile("https?://([a-zA-Z0-9]+)\\.mooncdn\\.(?:online|xyz)/([^/\\s\"']+/[^/\\s\"']+)/hls/")
 
     fun isMoonUrl(url: String): Boolean {
-        val lower = url.lowercase(Locale.ROOT)
-        return lower.contains("moonanime") || lower.contains("mooncdn") || lower.contains("/moon")
+        val host = ExtractorUtils.extractHost(url)
+        return if (host.isNotEmpty()) {
+            host.contains("moonanime") || host.contains("mooncdn") || host.contains("moonplayer")
+        } else {
+            val lower = url.lowercase(Locale.ROOT)
+            lower.contains("moonanime") || lower.contains("mooncdn") || lower.contains("moonplayer")
+        }
     }
 
     fun extractStreams(client: OkHttpClient, iframeUrl: String, referer: String?): List<StreamQuality> {

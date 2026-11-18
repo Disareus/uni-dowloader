@@ -48,11 +48,13 @@
 # Залишаємо публічні точки входу для інтеграції між модулями.
 -keep class ua.security.hardening.AppSecurityManager {
     public static ua.security.hardening.AppSecurityManager getInstance(android.content.Context);
+    public ua.security.hardening.SecurityAuditResult performAudit();
     public ua.security.hardening.SecurityAuditResult performFullAudit();
-    public boolean runProactiveSecurityCheck();
-    public void startPeriodicSecurityMonitor(long);
+    public void startPeriodicAudit(int);
+    public void startPeriodicSecurityMonitor(int);
     public void stopPeriodicSecurityMonitor();
-    public void handleCriticalBreach(java.lang.String);
+    public void registerListener(ua.security.hardening.SecurityListener);
+    public void setSecurityListener(ua.security.hardening.SecurityListener);
 }
 
 -keep class ua.security.hardening.ThreatLevel { *; }
@@ -62,29 +64,33 @@
 -keep class ua.security.crypto.SecureStorageManager {
     public static ua.security.crypto.SecureStorageManager getInstance(android.content.Context);
     public void emergencyWipe();
-    public void saveAuthToken(java.lang.String);
-    public java.lang.String getAuthToken();
-    public void clearSession();
+    public void putSecureString(java.lang.String, java.lang.String);
+    public java.lang.String getSecureString(java.lang.String, java.lang.String);
+    public void remove(java.lang.String);
 }
 
 -keep class ua.security.crypto.KeystoreCryptoManager {
     public static ua.security.crypto.KeystoreCryptoManager getInstance();
     public byte[] encrypt(byte[], byte[]);
     public byte[] decrypt(byte[], byte[]);
-    public void deleteMasterKey();
+    public void emergencyWipe();
 }
 
 -keep class ua.security.network.NetworkSecurityManager {
-    public static ua.security.network.NetworkSecurityManager getInstance(android.content.Context, ua.security.network.TamperDetectionInterceptor$SecurityStateProvider);
-    public okhttp3.OkHttpClient getOkHttpClient();
+    public static ua.security.network.NetworkSecurityManager init(android.content.Context, ua.security.network.TamperDetectionInterceptor$SecurityStateProvider);
+    public static ua.security.network.NetworkSecurityManager getInstance(android.content.Context);
+    public okhttp3.OkHttpClient getHardenedHttpClient();
 }
 
 -keep interface ua.security.network.TamperDetectionInterceptor$SecurityStateProvider { *; }
 
 -keep class ua.security.storage.DownloadSecurityManager {
     public static ua.security.storage.DownloadSecurityManager getInstance(android.content.Context);
-    public java.io.File prepareSafeDownloadFile(java.lang.String, java.lang.String, boolean);
-    public boolean verifyPathWithinDirectory(java.io.File, java.io.File);
+    public java.lang.String sanitizeFileName(java.lang.String);
+    public android.net.Uri createScopedVideoUri(java.lang.String, java.lang.String, java.lang.String);
+    public java.io.File getGuardedStorageDir(java.lang.String);
+    public void validateCanonicalDestination(java.io.File, java.io.File);
+    public void publishPendingVideo(android.net.Uri);
 }
 
 # ------------------------------------------------------------------------------
@@ -141,4 +147,4 @@
 }
 -dontwarn java.lang.invoke.StringConcatFactory
 -dontwarn java.lang.invoke.**
--keep class ua.aniua.downloader.models.** { *; }
+-keep class ua.aniua.downloader.model.** { *; }

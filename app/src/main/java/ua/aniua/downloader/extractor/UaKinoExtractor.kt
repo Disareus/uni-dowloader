@@ -15,21 +15,22 @@ object UaKinoExtractor {
     private val JS_PLAYER_FILE_PATTERN = Pattern.compile("(?:file|src)\\s*:\\s*[\"']([^\"']+)[\"']")
 
     fun isUaKinoUrl(url: String): Boolean {
-        val lower = url.lowercase(Locale.ROOT)
-        return lower.contains("uakino")
+        val host = ExtractorUtils.extractHost(url)
+        return if (host.isNotEmpty()) host.contains("uakino") else url.lowercase(Locale.ROOT).contains("uakino")
     }
 
     fun parsePage(client: OkHttpClient, pageUrl: String): MediaInfo {
         val normalizedPageUrl = ExtractorUtils.ensureHttpsScheme(pageUrl)
         val baseOrigin = ExtractorUtils.extractBaseOrigin(normalizedPageUrl, "https://uakino.me")
 
-        val request = Request.Builder()
+        val reqBuilder = Request.Builder()
             .url(normalizedPageUrl)
             .header("User-Agent", ExtractorUtils.DEFAULT_UA)
             .header("Referer", "$baseOrigin/")
             .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8")
             .header("Accept-Language", "uk,en-US;q=0.9,en;q=0.8")
-            .build()
+        ExtractorUtils.getCookieHeader(normalizedPageUrl)?.let { reqBuilder.header("Cookie", it) }
+        val request = reqBuilder.build()
 
         val html = client.newCall(request).execute().use { response ->
             if (!response.isSuccessful || response.body == null) {

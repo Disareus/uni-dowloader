@@ -75,7 +75,7 @@ object WebViewStreamResolver {
             suspendCancellableCoroutine { cont ->
                 val mainHandler = Handler(Looper.getMainLooper())
                 val intercepted = Collections.synchronizedList(mutableListOf<String>())
-                var finished = false
+                val finished = AtomicBoolean(false)
                 var pendingEvalRunnable: Runnable? = null
 
                 val webView = createConfiguredWebView(context)
@@ -92,11 +92,16 @@ object WebViewStreamResolver {
                 }
 
                 cont.invokeOnCancellation {
-                    finished = true
+                    finished.set(true)
                     mainHandler.post { cleanup() }
                 }
 
                 webView.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val scheme = request?.url?.scheme?.lowercase(Locale.ROOT)
+                        return scheme != "http" && scheme != "https"
+                    }
+
                     override fun shouldInterceptRequest(
                         view: WebView?,
                         request: WebResourceRequest?
@@ -109,22 +114,21 @@ object WebViewStreamResolver {
                     }
 
                     override fun onPageFinished(view: WebView?, loadedUrl: String?) {
-                        if (finished) return
+                        if (finished.get()) return
                         pendingEvalRunnable?.let { mainHandler.removeCallbacks(it) }
                         val runnable = Runnable {
-                            if (finished) return@Runnable
+                            if (finished.get()) return@Runnable
                             view?.evaluateJavascript("(function(){return document.documentElement ? document.documentElement.outerHTML : '';})();") { raw ->
-                                if (finished) return@evaluateJavascript
+                                if (finished.get()) return@evaluateJavascript
                                 val html = unescapeEvalResult(raw)
                                 val isChallenge = GenericSeriesExtractor.isChallengeOrBlockedHtml(html)
                                 val currentUrl = view.url ?: loadedUrl ?: url
                                 // Give Cloudflare JS challenge one extra settle cycle if not timed out
                                 if (isChallenge) {
                                     mainHandler.postDelayed({
-                                        if (finished) return@postDelayed
+                                        if (finished.get()) return@postDelayed
                                         view.evaluateJavascript("(function(){return document.documentElement ? document.documentElement.outerHTML : '';})();") innerEval@{ raw2 ->
-                                            if (finished) return@innerEval
-                                            finished = true
+                                            if (!finished.compareAndSet(false, true)) return@innerEval
                                             val html2 = unescapeEvalResult(raw2).ifEmpty { html }
                                             val finalUrl2 = view.url ?: currentUrl
                                             cleanup()
@@ -140,8 +144,7 @@ object WebViewStreamResolver {
                                             }
                                         }
                                     }, 3500L)
-                                } else {
-                                    finished = true
+                                } else if (finished.compareAndSet(false, true)) {
                                     cleanup()
                                     if (cont.isActive) {
                                         cont.resume(
@@ -175,7 +178,7 @@ object WebViewStreamResolver {
         withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 val mainHandler = Handler(Looper.getMainLooper())
-                var completed = false
+                val completed = AtomicBoolean(false)
                 var pollRunnable: Runnable? = null
 
                 val webView = createConfiguredWebView(context)
@@ -193,8 +196,7 @@ object WebViewStreamResolver {
                 }
 
                 fun finishWith(streams: List<StreamQuality>) {
-                    if (completed) return
-                    completed = true
+                    if (!completed.compareAndSet(false, true)) return
                     mainHandler.post {
                         cleanup()
                         if (cont.isActive) cont.resume(streams)
@@ -202,16 +204,21 @@ object WebViewStreamResolver {
                 }
 
                 cont.invokeOnCancellation {
-                    completed = true
+                    completed.set(true)
                     mainHandler.post { cleanup() }
                 }
 
                 webView.webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        val scheme = request?.url?.scheme?.lowercase(Locale.ROOT)
+                        return scheme != "http" && scheme != "https"
+                    }
+
                     override fun shouldInterceptRequest(
                         view: WebView?,
                         request: WebResourceRequest?
                     ): WebResourceResponse? {
-                        if (completed) return null
+                        if (completed.get()) return null
                         val reqUrl = request?.url?.toString()
                         if (isInterceptableMediaUrl(reqUrl) && reqUrl != null) {
                             val isHls = ExtractorUtils.isHlsUrl(reqUrl)
@@ -223,7 +230,8 @@ object WebViewStreamResolver {
                             if (reqOrigin.isNotEmpty()) {
                                 sq.headers["Origin"] = reqOrigin
                             }
-                            val cookie = ExtractorUtils.getCookieHeader(reqUrl) ?: ExtractorUtils.getCookieHeader(effectiveRef)
+                            val cookie = ExtractorUtils.getCookieHeader(reqUrl)
+                                ?: if (ExtractorUtils.isSameSiteForCookies(reqUrl, effectiveRef)) ExtractorUtils.getCookieHeader(effectiveRef) else null
                             if (!cookie.isNullOrBlank()) {
                                 sq.headers["Cookie"] = cookie
                             }
@@ -233,12 +241,12 @@ object WebViewStreamResolver {
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
-                        if (completed) return
+                        if (completed.get()) return
                         pollRunnable?.let { mainHandler.removeCallbacks(it) }
                         var attempt = 0
                         val checker = object : Runnable {
                             override fun run() {
-                                if (completed) return
+                                if (completed.get()) return
                                 attempt++
                                 val shouldClick = attempt == 1
                                 view?.evaluateJavascript(
@@ -252,7 +260,7 @@ object WebViewStreamResolver {
                                         return document.documentElement ? document.documentElement.outerHTML : '';
                                     })();""".trimIndent()
                                 ) { raw ->
-                                    if (completed) return@evaluateJavascript
+                                    if (completed.get()) return@evaluateJavascript
                                     val html = unescapeEvalResult(raw)
                                     val curUrl = view.url ?: url ?: pageUrl
                                     if (html.isNotEmpty()) {
@@ -260,7 +268,8 @@ object WebViewStreamResolver {
                                         if (direct.isNotEmpty()) {
                                             direct.forEach { sq ->
                                                 sq.headers.putIfAbsent("Referer", curUrl)
-                                                val cookie = ExtractorUtils.getCookieHeader(sq.url) ?: ExtractorUtils.getCookieHeader(curUrl)
+                                                val cookie = ExtractorUtils.getCookieHeader(sq.url)
+                                                    ?: if (ExtractorUtils.isSameSiteForCookies(sq.url, curUrl)) ExtractorUtils.getCookieHeader(curUrl) else null
                                                 if (!cookie.isNullOrBlank()) sq.headers["Cookie"] = cookie
                                             }
                                             finishWith(direct)
@@ -498,6 +507,10 @@ object WebViewStreamResolver {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
+            allowFileAccess = false
+            allowContentAccess = false
+            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            setGeolocationEnabled(false)
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_DEFAULT
             userAgentString = userAgent

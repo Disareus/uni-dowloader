@@ -11,12 +11,31 @@ import ua.aniua.downloader.model.MediaInfo
 import ua.aniua.downloader.model.PlayerSource
 import ua.aniua.downloader.model.StreamQuality
 import java.net.URI
+import java.net.URLEncoder
 import java.util.regex.Pattern
 
 object FenixExtractor {
 
     private val MEDIA_ACCESS_PATTERN = Pattern.compile("window\\.FENIX_MEDIA_ACCESS\\s*=\\s*(\\{[\\s\\S]*?\\});")
     private val PLAYLIST_PATTERN = Pattern.compile("window\\.FENIX_PLAYLIST\\s*=\\s*(\\{[\\s\\S]*?\\});")
+    private val SAFE_PATH_SEGMENT = Regex("^[a-zA-Z0-9._-]+$")
+
+    private fun JsonObject.strOrNull(key: String): String? =
+        if (has(key) && get(key).isJsonPrimitive) get(key).asString else null
+
+    private fun JsonObject.intOrNull(key: String): Int? =
+        try {
+            if (has(key) && get(key).isJsonPrimitive) get(key).asInt else null
+        } catch (_: Exception) {
+            null
+        }
+
+    private fun JsonObject.boolOrNull(key: String): Boolean? =
+        try {
+            if (has(key) && get(key).isJsonPrimitive) get(key).asBoolean else null
+        } catch (_: Exception) {
+            null
+        }
 
     fun isFenixUrl(url: String): Boolean {
         val lower = url.lowercase()
@@ -47,9 +66,7 @@ object FenixExtractor {
             if (mAccess.find()) {
                 try {
                     val accessJson = JsonParser.parseString(mAccess.group(1)).asJsonObject
-                    if (accessJson.has("token")) {
-                        mediaToken = accessJson.get("token").asString
-                    }
+                    mediaToken = accessJson.strOrNull("token")
                 } catch (ignored: Exception) {}
             }
 
@@ -58,12 +75,14 @@ object FenixExtractor {
             if (!mPlaylist.find()) return emptyList()
 
             val playlistJson = JsonParser.parseString(mPlaylist.group(1)).asJsonObject
-            val slug = playlistJson.get("slug")?.asString ?: return emptyList()
-            val playbackToken = playlistJson.getAsJsonObject("playback")?.get("token")?.asString ?: ""
+            val slug = playlistJson.strOrNull("slug")?.takeIf { SAFE_PATH_SEGMENT.matches(it) } ?: return emptyList()
+            val playbackToken = playlistJson.get("playback")
+                ?.takeIf { it.isJsonObject }?.asJsonObject?.strOrNull("token") ?: ""
 
             // 3. Визначаємо номер серії, редакцію (tv/mini) та бажану озвучку (l)
             var epNum = 1
-            var edition = playlistJson.get("default_edition")?.asString ?: "tv"
+            var edition = playlistJson.strOrNull("default_edition")
+                ?.takeIf { SAFE_PATH_SEGMENT.matches(it) } ?: "tv"
             var targetLabel: String? = null
 
             try {
@@ -73,9 +92,9 @@ object FenixExtractor {
                     val decodedStr = ExtractorUtils.decodeBase64Utf8(rawPart)
                     if (decodedStr.isNotEmpty()) {
                         val vodJson = JsonParser.parseString(decodedStr).asJsonObject
-                        if (vodJson.has("e")) epNum = vodJson.get("e").asInt
-                        if (vodJson.has("v")) edition = vodJson.get("v").asString
-                        if (vodJson.has("l")) targetLabel = vodJson.get("l").asString
+                        vodJson.intOrNull("e")?.let { epNum = it }
+                        vodJson.strOrNull("v")?.takeIf { SAFE_PATH_SEGMENT.matches(it) }?.let { edition = it }
+                        vodJson.strOrNull("l")?.let { targetLabel = it }
                     }
                 } else if (uri.query != null) {
                     val params = uri.query.split("&")
@@ -83,7 +102,10 @@ object FenixExtractor {
                         if (p.startsWith("ep=")) {
                             epNum = p.substringAfter("=").toIntOrNull() ?: epNum
                         } else if (p.startsWith("edition=")) {
-                            edition = p.substringAfter("=")
+                            val candidate = p.substringAfter("=")
+                            if (SAFE_PATH_SEGMENT.matches(candidate)) {
+                                edition = candidate
+                            }
                         } else if (p.startsWith("voice=") || p.startsWith("studio=") || p.startsWith("l=")) {
                             targetLabel = p.substringAfter("=")
                         }
@@ -92,7 +114,9 @@ object FenixExtractor {
             } catch (_: Exception) {}
 
             // 4. Запитуємо детальну інформацію про серію через Fenix Playback API
-            val apiUrl = "https://fenixplay.xyz/api/playback/$slug/episodes/$edition/$epNum"
+            val encSlug = URLEncoder.encode(slug, "UTF-8")
+            val encEdition = URLEncoder.encode(edition, "UTF-8")
+            val apiUrl = "https://fenixplay.xyz/api/playback/$encSlug/episodes/$encEdition/$epNum"
             val apiReq = Request.Builder()
                 .url(apiUrl)
                 .header("User-Agent", ExtractorUtils.DEFAULT_UA)
@@ -103,20 +127,21 @@ object FenixExtractor {
 
             val apiBody = ExtractorUtils.executeForString(client, apiReq) ?: return emptyList()
             val apiObj = JsonParser.parseString(apiBody).asJsonObject
-            val epObj = apiObj.getAsJsonObject("episode") ?: return emptyList()
+            val epObj = apiObj.get("episode")?.takeIf { it.isJsonObject }?.asJsonObject ?: return emptyList()
 
             // 5. Вибір потрібного треку (озвучки) з tracks
             var selectedTrack: JsonObject? = null
+            val desiredLabel = targetLabel
             if (epObj.has("tracks") && epObj.get("tracks").isJsonArray) {
                 val tracks = epObj.getAsJsonArray("tracks")
-                if (!targetLabel.isNullOrEmpty()) {
+                if (!desiredLabel.isNullOrEmpty()) {
                     for (tElem in tracks) {
                         if (!tElem.isJsonObject) continue
                         val tObj = tElem.asJsonObject
-                        val tLabel = tObj.get("label")?.asString ?: ""
-                        if (tLabel.equals(targetLabel, ignoreCase = true) ||
-                            tLabel.contains(targetLabel, ignoreCase = true) ||
-                            targetLabel.contains(tLabel, ignoreCase = true)
+                        val tLabel = tObj.strOrNull("label") ?: ""
+                        if (tLabel.equals(desiredLabel, ignoreCase = true) ||
+                            tLabel.contains(desiredLabel, ignoreCase = true) ||
+                            desiredLabel.contains(tLabel, ignoreCase = true)
                         ) {
                             selectedTrack = tObj
                             break
@@ -128,7 +153,7 @@ object FenixExtractor {
                     for (tElem in tracks) {
                         if (!tElem.isJsonObject) continue
                         val tObj = tElem.asJsonObject
-                        if (tObj.get("is_default")?.asBoolean == true) {
+                        if (tObj.boolOrNull("is_default") == true) {
                             selectedTrack = tObj
                             break
                         }
@@ -139,8 +164,8 @@ object FenixExtractor {
                 }
             }
 
-            var rawMaster = selectedTrack?.get("hls_url")?.asString ?: epObj.get("hls_master_url")?.asString
-            var rawCastAvc = selectedTrack?.get("cast_avc_url")?.asString ?: epObj.get("cast_avc_url")?.asString
+            val rawMaster = selectedTrack?.strOrNull("hls_url") ?: epObj.strOrNull("hls_master_url")
+            val rawCastAvc = selectedTrack?.strOrNull("cast_avc_url") ?: epObj.strOrNull("cast_avc_url")
 
             val authMaster = authorizeUrl(rawMaster, mediaToken)
             val authCastAvc = authorizeUrl(rawCastAvc, mediaToken)
@@ -193,10 +218,10 @@ object FenixExtractor {
             if (!mPlaylist.find()) return null
 
             val playlistJson = JsonParser.parseString(mPlaylist.group(1)).asJsonObject
-            val titleUa = playlistJson.get("title_ua")?.asString ?: "Fenix Аніме"
-            val titleOrig = playlistJson.get("title_orig")?.asString
-            val posterUrl = playlistJson.get("poster_url")?.asString
-            val slug = playlistJson.get("slug")?.asString ?: "anime"
+            val titleUa = playlistJson.strOrNull("title_ua") ?: "Fenix Аніме"
+            val titleOrig = playlistJson.strOrNull("title_orig")
+            val posterUrl = playlistJson.strOrNull("poster_url")
+            val slug = playlistJson.strOrNull("slug")?.takeIf { SAFE_PATH_SEGMENT.matches(it) } ?: "anime"
 
             val episodesList = mutableListOf<EpisodeItem>()
             val rawEpisodes = if (playlistJson.has("episodes") && playlistJson.get("episodes").isJsonArray) {
@@ -210,9 +235,9 @@ object FenixExtractor {
                 if (!epElem.isJsonObject) continue
                 val epObj = epElem.asJsonObject
 
-                val epNum = epObj.get("number")?.asInt ?: (i + 1)
-                val epTitle = epObj.get("title")?.asString ?: "Серія $epNum"
-                val epEdition = epObj.get("edition")?.asString ?: "tv"
+                val epNum = epObj.intOrNull("number") ?: (i + 1)
+                val epTitle = epObj.strOrNull("title") ?: "Серія $epNum"
+                val epEdition = epObj.strOrNull("edition")?.takeIf { SAFE_PATH_SEGMENT.matches(it) } ?: "tv"
 
                 val epUrl = "https://fenixplay.xyz/embed/$slug?ep=$epNum&edition=$epEdition"
                 episodesList.add(

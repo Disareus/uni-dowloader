@@ -40,6 +40,8 @@ class OkHttpDataSource(
 
     private val requestProperties = HashMap<String, String>(initialProperties)
     private var dataSpec: DataSpec? = null
+    @Volatile
+    private var currentCall: Call? = null
     private var response: Response? = null
     private var responseStream: InputStream? = null
     private var opened = false
@@ -74,9 +76,12 @@ class OkHttpDataSource(
         transferInitializing(dataSpec)
 
         val request = buildOkHttpRequest(dataSpec)
+        val call = callFactory.newCall(request)
+        currentCall = call
         val resp = try {
-            callFactory.newCall(request).execute()
+            call.execute()
         } catch (e: IOException) {
+            currentCall = null
             throw HttpDataSource.HttpDataSourceException.createForIOException(
                 e,
                 dataSpec,
@@ -110,16 +115,38 @@ class OkHttpDataSource(
             )
         }
 
+        val stream = body.byteStream()
+        responseStream = stream
+
         val contentLength = body.contentLength()
+        val bytesToSkip = if (resp.code == 200 && dataSpec.position > 0L) dataSpec.position else 0L
+        if (bytesToSkip > 0L) {
+            try {
+                skipFully(stream, bytesToSkip)
+            } catch (e: IOException) {
+                closeQuietly()
+                throw HttpDataSource.HttpDataSourceException.createForIOException(
+                    e,
+                    dataSpec,
+                    HttpDataSource.HttpDataSourceException.TYPE_OPEN
+                )
+            }
+        }
+
+        val effectiveContentLength = if (contentLength != -1L && bytesToSkip > 0L) {
+            (contentLength - bytesToSkip).coerceAtLeast(0L)
+        } else {
+            contentLength
+        }
+
         bytesToRead = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
             dataSpec.length
-        } else if (contentLength != -1L) {
-            contentLength
+        } else if (effectiveContentLength != -1L) {
+            effectiveContentLength
         } else {
             C.LENGTH_UNSET.toLong()
         }
 
-        responseStream = body.byteStream()
         opened = true
         transferStarted(dataSpec)
         return bytesToRead
@@ -200,7 +227,24 @@ class OkHttpDataSource(
         return builder.build()
     }
 
+    private fun skipFully(stream: InputStream, bytesToSkip: Long) {
+        var remaining = bytesToSkip
+        val skipBuf = ByteArray(8 * 1024)
+        while (remaining > 0L) {
+            val toRead = minOf(remaining, skipBuf.size.toLong()).toInt()
+            val read = stream.read(skipBuf, 0, toRead)
+            if (read == -1) {
+                throw IOException("Unexpected EOF while skipping $bytesToSkip bytes")
+            }
+            remaining -= read
+        }
+    }
+
     private fun closeQuietly() {
+        try {
+            currentCall?.cancel()
+        } catch (_: Exception) {}
+        currentCall = null
         try {
             responseStream?.close()
         } catch (_: Exception) {}

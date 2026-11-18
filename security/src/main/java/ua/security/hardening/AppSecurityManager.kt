@@ -22,9 +22,13 @@ class AppSecurityManager private constructor(context: Context) : TamperDetection
     private val currentThreatLevel = AtomicReference(ThreatLevel.CLEAN)
     private val isEmergencyWipeInProgress = AtomicBoolean(false)
 
+    @Volatile
     private var securityListener: SecurityListener? = null
     private var monitorExecutor: ScheduledExecutorService? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private fun isDebuggable(): Boolean =
+        (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
     companion object {
         @Volatile
@@ -167,6 +171,7 @@ class AppSecurityManager private constructor(context: Context) : TamperDetection
     }
 
     private fun triggerEmergencyWipe() {
+        if (isDebuggable()) return
         if (isEmergencyWipeInProgress.compareAndSet(false, true)) {
             try {
                 SecureStorageManager.getInstance(context).emergencyWipe()

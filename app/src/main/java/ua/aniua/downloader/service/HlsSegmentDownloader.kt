@@ -23,6 +23,7 @@ import java.nio.ByteBuffer
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -54,6 +55,30 @@ object HlsSegmentDownloader {
         fun onProgress(percent: Float, speed: String, eta: String, downloaded: Long, total: Long)
     }
 
+    private class CountingOutputStream(private val delegate: OutputStream) : OutputStream() {
+        @Volatile
+        var bytesWritten: Long = 0L
+            private set
+
+        override fun write(b: Int) {
+            delegate.write(b)
+            bytesWritten++
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            delegate.write(b, off, len)
+            bytesWritten += len
+        }
+
+        override fun flush() = delegate.flush()
+    }
+
+    private data class SegmentKeySpec(
+        val isAes128: Boolean,
+        val keyUrl: String?,
+        val ivHex: String?
+    )
+
     fun download(
         context: Context,
         client: OkHttpClient,
@@ -63,12 +88,13 @@ object HlsSegmentDownloader {
         isCancelled: AtomicBoolean?
     ) {
         task.state = DownloadState.DOWNLOADING
+        val countedOut = CountingOutputStream(outputStream)
 
         // 1. Отримуємо прямий потік відео (m3u8 або mp4) через GenericPlayerResolver
         var streamUrl = task.streamUrl
         var audioUrl = task.audioUrl
         var referer = task.referer.ifEmpty { task.iframeUrl }
-        var extraHeaders: Map<String, String> = task.headers
+        var extraHeaders: Map<String, String> = synchronized(task.headers) { task.headers.toMap() }
 
         fun applyBestQuality(best: ua.aniua.downloader.model.StreamQuality) {
             streamUrl = best.url
@@ -78,8 +104,10 @@ object HlsSegmentDownloader {
             task.streamUrl = streamUrl
             task.audioUrl = audioUrl
             task.referer = referer
-            task.headers.clear()
-            task.headers.putAll(best.headers)
+            synchronized(task.headers) {
+                task.headers.clear()
+                task.headers.putAll(best.headers)
+            }
         }
 
         fun resolveFreshStream() {
@@ -102,10 +130,12 @@ object HlsSegmentDownloader {
             try {
                 executeStreamDownload(
                     context, client, streamUrl, audioUrl, referer, extraHeaders,
-                    task.quality, outputStream, listener, isCancelled
+                    task.quality, countedOut, listener, isCancelled
                 )
             } catch (e: Exception) {
                 if (isCancelled?.get() == true) throw e
+                // Не можна дописувати новий потік у той самий OutputStream, якщо вже записано часткові дані
+                if (countedOut.bytesWritten > 0L) throw e
 
                 val isYouTube = YouTubeExtractor.isYouTubeUrl(task.iframeUrl) ||
                     streamUrl.contains("googlevideo.com", ignoreCase = true)
@@ -138,11 +168,12 @@ object HlsSegmentDownloader {
                     var lastErr: Exception = e
                     for (fb in orderedFallbacks) {
                         if (fb.url == streamUrl && fb.audioUrl == audioUrl) continue
+                        if (countedOut.bytesWritten > 0L) break
                         applyBestQuality(fb)
                         try {
                             executeStreamDownload(
                                 context, client, streamUrl, audioUrl, referer, extraHeaders,
-                                task.quality, outputStream, listener, isCancelled
+                                task.quality, countedOut, listener, isCancelled
                             )
                             return@run
                         } catch (retryErr: Exception) {
@@ -160,7 +191,7 @@ object HlsSegmentDownloader {
                     resolveFreshStream()
                     executeStreamDownload(
                         context, client, streamUrl, audioUrl, referer, extraHeaders,
-                        task.quality, outputStream, listener, isCancelled
+                        task.quality, countedOut, listener, isCancelled
                     )
                 } else {
                     throw e
@@ -236,9 +267,8 @@ object HlsSegmentDownloader {
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?
     ) {
-        val ts = System.currentTimeMillis()
-        val tempVideoFile = File(context.cacheDir, "yt_video_$ts.mp4")
-        val tempAudioFile = File(context.cacheDir, "yt_audio_$ts.mp4")
+        val tempVideoFile = File.createTempFile("yt_video_", ".mp4", context.cacheDir)
+        val tempAudioFile = File.createTempFile("yt_audio_", ".mp4", context.cacheDir)
         try {
             downloadDirectToFile(client, videoUrl, referer, extraHeaders, tempVideoFile, listener, isCancelled, progressWeight = 0.75f, baseProgress = 0f)
             if (isCancelled?.get() == true) return
@@ -433,6 +463,11 @@ object HlsSegmentDownloader {
                 }
             } finally {
                 pool.shutdownNow()
+                try {
+                    pool.awaitTermination(3, TimeUnit.SECONDS)
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
             }
 
             firstError.get()?.let { throw it }
@@ -535,6 +570,7 @@ object HlsSegmentDownloader {
             val request = buildRequestWithHeaders(url, referer, extraHeaders, "bytes=$offset-$end")
             var isChunkedRange = false
 
+            var chunkBytesRead = 0L
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful || response.body == null) {
                     throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
@@ -563,6 +599,7 @@ object HlsSegmentDownloader {
                         out.write(buffer, 0, bytesRead)
                         downloaded += bytesRead
                         offset += bytesRead
+                        chunkBytesRead += bytesRead
 
                         val now = System.currentTimeMillis()
                         if (now - lastUpdate >= PROGRESS_THROTTLE_MS) {
@@ -579,6 +616,9 @@ object HlsSegmentDownloader {
                 }
             }
 
+            if (isCancelled?.get() != true && chunkBytesRead == 0L) {
+                throw IllegalStateException("Сервер повернув порожній фрагмент при завантаженні відео")
+            }
             if (!isChunkedRange || totalBytes <= 0L || offset >= totalBytes) {
                 break
             }
@@ -703,8 +743,8 @@ object HlsSegmentDownloader {
         // 3. Завантаження сегментів
         if (audioPlaylistUrl != null) {
             // Роздільні потоки відео і аудіо (наприклад, Fenix fMP4)
-            val tempVideoFile = File(context.cacheDir, "temp_video_${System.currentTimeMillis()}.mp4")
-            val tempAudioFile = File(context.cacheDir, "temp_audio_${System.currentTimeMillis()}.mp4")
+            val tempVideoFile = File.createTempFile("temp_video_", ".mp4", context.cacheDir)
+            val tempAudioFile = File.createTempFile("temp_audio_", ".mp4", context.cacheDir)
 
             try {
                 FileOutputStream(tempVideoFile).use { videoOut ->
@@ -752,11 +792,9 @@ object HlsSegmentDownloader {
         }
         val mediaBaseUri = URI(playlistUrl)
 
-        val segmentUrls = mutableListOf<String>()
+        val segments = mutableListOf<Pair<String, SegmentKeySpec>>()
         var initSegmentUrl: String? = null
-        var aesKeyUrl: String? = null
-        var aesIvHex: String? = null
-        var isAes128 = false
+        var currentKeySpec = SegmentKeySpec(isAes128 = false, keyUrl = null, ivHex = null)
         var mediaSequence = 0L
 
         BufferedReader(InputStreamReader(mediaContent.byteInputStream())).use { reader ->
@@ -779,23 +817,23 @@ object HlsSegmentDownloader {
                     if (mMethod.find()) {
                         val method = mMethod.group(1)
                         if (method.equals("AES-128", ignoreCase = true)) {
-                            isAes128 = true
                             val mUri = URI_PATTERN.matcher(l)
-                            if (mUri.find()) {
+                            val keyUrl = if (mUri.find()) {
                                 val rawKeyUri = mUri.group(1) ?: ""
-                                aesKeyUrl = if (rawKeyUri.startsWith("http")) rawKeyUri else mediaBaseUri.resolve(rawKeyUri).toString()
+                                if (rawKeyUri.startsWith("http")) rawKeyUri else mediaBaseUri.resolve(rawKeyUri).toString()
+                            } else {
+                                currentKeySpec.keyUrl
                             }
                             val mIv = IV_PATTERN.matcher(l)
-                            if (mIv.find()) {
-                                aesIvHex = mIv.group(1)
-                            }
+                            val ivHex = if (mIv.find()) mIv.group(1) else null
+                            currentKeySpec = SegmentKeySpec(isAes128 = true, keyUrl = keyUrl, ivHex = ivHex)
                         } else if (method.equals("NONE", ignoreCase = true)) {
-                            isAes128 = false
+                            currentKeySpec = SegmentKeySpec(isAes128 = false, keyUrl = null, ivHex = null)
                         }
                     }
                 } else if (!l.startsWith("#") && l.isNotEmpty()) {
                     val segUrl = if (l.startsWith("http://") || l.startsWith("https://")) l else mediaBaseUri.resolve(l).toString()
-                    segmentUrls.add(segUrl)
+                    segments.add(segUrl to currentKeySpec)
                 }
             }
         }
@@ -820,27 +858,30 @@ object HlsSegmentDownloader {
             } catch (_: Exception) {}
         }
 
-        val totalSegments = segmentUrls.size
+        val totalSegments = segments.size
         if (totalSegments == 0) {
             throw IllegalStateException("Не знайдено відео-сегментів у HLS плейлисті")
         }
 
-        // Завантаження AES-128 ключа
-        var aesKeyBytes: ByteArray? = null
-        val targetKeyUrl = aesKeyUrl
-        if (isAes128 && !targetKeyUrl.isNullOrEmpty()) {
-            val keyReq = buildRequestWithHeaders(targetKeyUrl, referer, extraHeaders)
-            client.newCall(keyReq).execute().use { keyResp ->
-                if (keyResp.isSuccessful && keyResp.body != null) {
-                    aesKeyBytes = keyResp.body?.bytes()
+        // Кеш AES-128 ключів (підтримка ротації ключів у плейлисті)
+        val aesKeyCache = mutableMapOf<String, ByteArray>()
+        fun getAesKey(keyUrl: String): ByteArray {
+            return aesKeyCache.getOrPut(keyUrl) {
+                val keyReq = buildRequestWithHeaders(keyUrl, referer, extraHeaders)
+                var fetched: ByteArray? = null
+                client.newCall(keyReq).execute().use { keyResp ->
+                    if (keyResp.isSuccessful && keyResp.body != null) {
+                        fetched = keyResp.body?.bytes()
+                    }
                 }
-            }
-            if (aesKeyBytes == null || aesKeyBytes?.size != 16) {
-                throw IllegalStateException("Не вдалося завантажити ключ шифрування AES-128")
+                val valid = fetched
+                if (valid == null || valid.size != 16) {
+                    throw IllegalStateException("Не вдалося завантажити ключ шифрування AES-128")
+                }
+                valid
             }
         }
 
-        val keyBytes = aesKeyBytes
         val startTime = System.currentTimeMillis()
         var lastUpdate = 0L
         var failedSegments = 0
@@ -848,11 +889,12 @@ object HlsSegmentDownloader {
         for (i in 0 until totalSegments) {
             if (isCancelled?.get() == true) break
 
-            val segUrl = segmentUrls[i]
+            val (segUrl, keySpec) = segments[i]
             val segBytes = downloadSegmentWithRetry(client, segUrl, referer, extraHeaders, isCancelled)
             if (segBytes != null && segBytes.isNotEmpty()) {
-                val finalBytes = if (isAes128 && keyBytes != null) {
-                    decryptAes128(segBytes, keyBytes, aesIvHex, mediaSequence + i)
+                val finalBytes = if (keySpec.isAes128 && !keySpec.keyUrl.isNullOrEmpty()) {
+                    val keyBytes = getAesKey(keySpec.keyUrl)
+                    decryptAes128(segBytes, keyBytes, keySpec.ivHex, mediaSequence + i)
                 } else {
                     segBytes
                 }
@@ -934,6 +976,7 @@ object HlsSegmentDownloader {
         var muxer: MediaMuxer? = null
         var videoExtractor: MediaExtractor? = null
         var audioExtractor: MediaExtractor? = null
+        var startedWritingOutput = false
 
         try {
             videoExtractor = MediaExtractor().apply { setDataSource(videoFile.absolutePath) }
@@ -1032,9 +1075,13 @@ object HlsSegmentDownloader {
             }
 
             muxer.stop()
+            startedWritingOutput = true
             tempMuxFile.inputStream().use { it.copyTo(outStream) }
         } catch (e: Exception) {
-            // У разі помилки муксування копіюємо оригінальний відеофайл
+            if (startedWritingOutput) {
+                throw e
+            }
+            // У разі помилки муксування (до запису в outStream) копіюємо оригінальний відеофайл
             videoFile.inputStream().use { it.copyTo(outStream) }
         } finally {
             try { muxer?.release() } catch (ignored: Exception) {}
@@ -1055,7 +1102,7 @@ object HlsSegmentDownloader {
             cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
             cipher.doFinal(encrypted)
         } catch (e: Exception) {
-            encrypted
+            throw IllegalStateException("Помилка розшифрування AES-128 сегмента HLS: ${e.message}", e)
         }
     }
 

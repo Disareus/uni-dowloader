@@ -76,11 +76,18 @@ class ShortcutRepository(context: Context) {
         fun normalizeAndValidateUrl(rawUrl: String): String? {
             val trimmed = rawUrl.trim()
             if (trimmed.isEmpty()) return null
+            val lower = trimmed.lowercase(Locale.ROOT)
+            if (lower.startsWith("javascript:") || lower.startsWith("file:") ||
+                lower.startsWith("content:") || lower.startsWith("data:") || lower.startsWith("intent:")
+            ) {
+                return null
+            }
             val withScheme = ExtractorUtils.ensureHttpsScheme(trimmed)
             return try {
                 val uri = URI(withScheme)
+                val scheme = uri.scheme?.lowercase(Locale.ROOT)
                 val host = uri.host
-                if (host.isNullOrBlank() || !host.contains(".")) null else withScheme
+                if ((scheme != "http" && scheme != "https") || host.isNullOrBlank() || !host.contains(".")) null else withScheme
             } catch (_: Exception) {
                 null
             }

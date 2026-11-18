@@ -151,6 +151,7 @@ class NetworkSecurityManager private constructor(
                 if (!expectedPins.isNullOrEmpty()) {
                     val certs = handshake.peerCertificates
                     if (certs.isEmpty()) {
+                        response.close()
                         throw SSLPeerUnverifiedException("Peer certificate chain is empty for $host")
                     }
 
@@ -159,6 +160,7 @@ class NetworkSecurityManager private constructor(
                     val actualPinSha256 = sha256Base64(spkiBytes)
 
                     if (!expectedPins.contains(actualPinSha256)) {
+                        response.close()
                         throw SSLPeerUnverifiedException(
                             "Dual-Layer Pinning Failed for host: $host. Expected one of: $expectedPins, found SPKI: $actualPinSha256"
                         )

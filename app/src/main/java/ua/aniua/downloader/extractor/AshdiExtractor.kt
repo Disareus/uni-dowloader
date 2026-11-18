@@ -106,7 +106,7 @@ object AshdiExtractor {
             for (studioElement in rootElement.asJsonArray) {
                 if (!studioElement.isJsonObject) continue
                 val sObj = studioElement.asJsonObject
-                val studioTitle = sObj.get("title")?.asString ?: "Озвучка"
+                val studioTitle = sObj.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "Озвучка"
                 val studio = DubStudio(
                     id = "ashdi_" + studioTitle.hashCode(),
                     name = studioTitle
@@ -116,9 +116,11 @@ object AshdiExtractor {
                 if (sObj.has("folder") && sObj.get("folder").isJsonArray) {
                     val folder = sObj.getAsJsonArray("folder")
                     for (i in 0 until folder.size()) {
-                        val epObj = folder[i].asJsonObject
-                        val epTitle = epObj.get("title")?.asString ?: "Серія ${i + 1}"
-                        val epFile = epObj.get("file")?.asString ?: ""
+                        val epElem = folder[i]
+                        if (!epElem.isJsonObject) continue
+                        val epObj = epElem.asJsonObject
+                        val epTitle = epObj.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: "Серія ${i + 1}"
+                        val epFile = epObj.get("file")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
                         if (epFile.isNotEmpty()) {
                             episodes.add(
                                 EpisodeItem(

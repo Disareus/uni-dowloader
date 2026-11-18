@@ -100,6 +100,10 @@ class DownloadService : Service() {
                 queueManager.enqueueDownload(task)
             }
         }
+        if (queueManager.getActiveCount() == 0) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf(startId)
+        }
         return START_NOT_STICKY
     }
 

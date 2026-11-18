@@ -8,6 +8,7 @@ object ExtractorRouter {
     fun analyzeUrl(client: OkHttpClient, url: String, preloadedHtml: String? = null): MediaInfo {
         val cleanUrl = ExtractorUtils.ensureHttpsScheme(url)
         val lowerUrl = cleanUrl.lowercase()
+        val host = ExtractorUtils.extractHost(cleanUrl)
 
         // 1. YouTube (Watch, Shorts, youtu.be, embed)
         if (YouTubeExtractor.isYouTubeUrl(cleanUrl)) {
@@ -30,12 +31,12 @@ object ExtractorRouter {
         }
 
         // 5. AniTube (Аніме, фільми, OVA)
-        if (lowerUrl.contains("anitube")) {
+        if (host.contains("anitube")) {
             return AnitubeExtractor.parsePage(client, cleanUrl)
         }
 
         // 6. Прямі серіали Ashdi
-        if (lowerUrl.contains("ashdi") && lowerUrl.contains("/serial/")) {
+        if (host.contains("ashdi") && lowerUrl.contains("/serial/")) {
             val studios = AshdiExtractor.parseAshdiSerial(client, cleanUrl)
             return MediaInfo(
                 url = cleanUrl,

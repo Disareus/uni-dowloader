@@ -35,7 +35,7 @@ class SecureStorageManager private constructor(context: Context) {
     }
 
     @Synchronized
-    private fun initEncryptedPreferences() {
+    private fun initEncryptedPreferences(retryOnCorruption: Boolean = true) {
         try {
             val masterKey = try {
                 MasterKey.Builder(context)
@@ -58,6 +58,9 @@ class SecureStorageManager private constructor(context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Помилка ініціалізації EncryptedSharedPreferences: ${e.message}")
             fallbackRecoverPrefs()
+            if (retryOnCorruption) {
+                initEncryptedPreferences(retryOnCorruption = false)
+            }
         }
     }
 

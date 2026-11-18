@@ -12,6 +12,9 @@ class ShortcutRepositoryTest {
         assertEquals("https://uakino.me/", ShortcutRepository.normalizeAndValidateUrl("https://uakino.me/"))
         assertNull(ShortcutRepository.normalizeAndValidateUrl(""))
         assertNull(ShortcutRepository.normalizeAndValidateUrl("not a url"))
+        assertNull(ShortcutRepository.normalizeAndValidateUrl("javascript:alert(1)"))
+        assertNull(ShortcutRepository.normalizeAndValidateUrl("file:///etc/passwd"))
+        assertNull(ShortcutRepository.normalizeAndValidateUrl("content://com.example.provider/data"))
     }
 
     @Test

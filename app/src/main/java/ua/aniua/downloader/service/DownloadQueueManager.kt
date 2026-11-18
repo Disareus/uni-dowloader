@@ -4,6 +4,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import ua.aniua.downloader.model.DownloadState
 import ua.aniua.downloader.model.DownloadTask
 import ua.security.network.NetworkSecurityManager
@@ -14,22 +16,34 @@ import java.io.OutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 
 class DownloadQueueManager private constructor(context: Context) {
 
     private val context = context.applicationContext
     private val httpClient = NetworkSecurityManager.getInstance(context).hardenedHttpClient
     private val downloadSecurity = DownloadSecurityManager.getInstance(context)
+    private val prefs = this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val gson = Gson()
 
     private val tasks = ConcurrentHashMap<String, DownloadTask>()
-    private val cancelTokens = ConcurrentHashMap<String, AtomicBoolean>()
+    private val cancelControllers = ConcurrentHashMap<String, HlsSegmentDownloader.DownloadCancelController>()
     private val listeners = CopyOnWriteArrayList<(DownloadTask) -> Unit>()
 
     private val executor = Executors.newFixedThreadPool(3)
+    private val persistExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "AniUa-QueuePersist").apply { isDaemon = true }
+    }
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    init {
+        restorePersistedTasks()
+    }
+
     companion object {
+        private const val PREFS_NAME = "aniua_download_history_prefs"
+        private const val KEY_TASKS = "persisted_download_tasks"
+        private const val MAX_PERSISTED_TASKS = 100
+
         @Volatile
         private var sInstance: DownloadQueueManager? = null
 
@@ -38,6 +52,44 @@ class DownloadQueueManager private constructor(context: Context) {
             return sInstance ?: synchronized(DownloadQueueManager::class.java) {
                 sInstance ?: DownloadQueueManager(context).also { sInstance = it }
             }
+        }
+
+        internal fun recoverInterruptedTasks(list: List<DownloadTask>): List<DownloadTask> {
+            return list.map { t ->
+                if (t.state == DownloadState.PENDING || t.state == DownloadState.DOWNLOADING) {
+                    t.copy(
+                        state = DownloadState.CANCELLED,
+                        speed = "",
+                        eta = "",
+                        errorMessage = "Перервано системою — натисніть повтор",
+                        headers = LinkedHashMap(t.headers)
+                    )
+                } else {
+                    t.copy(headers = LinkedHashMap(t.headers))
+                }
+            }
+        }
+    }
+
+    private fun restorePersistedTasks() {
+        try {
+            val raw = prefs.getString(KEY_TASKS, null) ?: return
+            val type = object : TypeToken<List<DownloadTask>>() {}.type
+            val loaded: List<DownloadTask> = gson.fromJson(raw, type) ?: return
+            for (task in recoverInterruptedTasks(loaded)) {
+                if (task.id.isNotEmpty()) {
+                    tasks[task.id] = task
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun persistTasksAsync() {
+        val snapshot = getAllTasks().take(MAX_PERSISTED_TASKS)
+        persistExecutor.execute {
+            try {
+                prefs.edit().putString(KEY_TASKS, gson.toJson(snapshot)).apply()
+            } catch (_: Exception) {}
         }
     }
 
@@ -72,8 +124,8 @@ class DownloadQueueManager private constructor(context: Context) {
     }
 
     fun enqueueDownload(rawTask: DownloadTask) {
-        // Cancel any previously running worker for the same task id and work on a fresh copy
-        cancelTokens[rawTask.id]?.set(true)
+        // Cancel any previously running worker & sockets for the same task id and work on a fresh copy
+        cancelControllers[rawTask.id]?.cancelAll()
         val task = snapshotTask(rawTask).apply {
             state = DownloadState.PENDING
             progress = 0f
@@ -85,10 +137,12 @@ class DownloadQueueManager private constructor(context: Context) {
         }
 
         tasks[task.id] = task
-        val cancelToken = AtomicBoolean(false)
-        cancelTokens[task.id] = cancelToken
+        val cancelController = HlsSegmentDownloader.DownloadCancelController()
+        val cancelToken = cancelController.cancelled
+        cancelControllers[task.id] = cancelController
 
         notifyUpdate(task)
+        persistTasksAsync()
 
         executor.execute {
             var outStream: OutputStream? = null
@@ -99,6 +153,7 @@ class DownloadQueueManager private constructor(context: Context) {
                 if (cancelToken.get()) {
                     task.state = DownloadState.CANCELLED
                     notifyUpdate(task)
+                    persistTasksAsync()
                     return@execute
                 }
 
@@ -172,7 +227,8 @@ class DownloadQueueManager private constructor(context: Context) {
                         task.totalBytes = total
                         notifyUpdate(task)
                     },
-                    cancelToken
+                    cancelToken,
+                    cancelController
                 )
 
                 try {
@@ -187,6 +243,7 @@ class DownloadQueueManager private constructor(context: Context) {
                 }
 
                 notifyUpdate(task)
+                persistTasksAsync()
             } catch (e: Exception) {
                 try {
                     outStream?.close()
@@ -196,6 +253,7 @@ class DownloadQueueManager private constructor(context: Context) {
                 task.errorMessage = if (task.state == DownloadState.ERROR) (e.message ?: "Помилка завантаження") else null
                 cleanupPartialOutput(contentUri, legacyFile)
                 notifyUpdate(task)
+                persistTasksAsync()
             } finally {
                 try {
                     outStream?.close()
@@ -218,11 +276,12 @@ class DownloadQueueManager private constructor(context: Context) {
     }
 
     fun cancelTask(taskId: String) {
-        cancelTokens[taskId]?.set(true)
+        cancelControllers[taskId]?.cancelAll()
         tasks[taskId]?.let {
             if (it.state == DownloadState.PENDING || it.state == DownloadState.DOWNLOADING || it.state == DownloadState.PAUSED) {
                 it.state = DownloadState.CANCELLED
                 notifyUpdate(it)
+                persistTasksAsync()
             }
         }
     }
@@ -235,9 +294,10 @@ class DownloadQueueManager private constructor(context: Context) {
     }
 
     fun removeTask(taskId: String) {
-        cancelTokens[taskId]?.set(true)
-        cancelTokens.remove(taskId)
+        cancelControllers[taskId]?.cancelAll()
+        cancelControllers.remove(taskId)
         tasks.remove(taskId)
+        persistTasksAsync()
     }
 
     fun clearFinished() {
@@ -246,7 +306,8 @@ class DownloadQueueManager private constructor(context: Context) {
         }
         for (t in toRemove) {
             tasks.remove(t.id)
-            cancelTokens.remove(t.id)
+            cancelControllers.remove(t.id)
         }
+        persistTasksAsync()
     }
 }

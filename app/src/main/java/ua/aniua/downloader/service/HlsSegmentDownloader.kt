@@ -5,8 +5,10 @@ import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import ua.aniua.downloader.extractor.ExtractorUtils
 import ua.aniua.downloader.extractor.GenericPlayerResolver
 import ua.aniua.downloader.extractor.YouTubeExtractor
@@ -21,10 +23,13 @@ import java.io.RandomAccessFile
 import java.net.URI
 import java.nio.ByteBuffer
 import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.regex.Pattern
@@ -39,8 +44,64 @@ object HlsSegmentDownloader {
 
     private const val PROGRESS_THROTTLE_MS = 300L
     private const val SEGMENT_MAX_RETRIES = 3
+    private const val HLS_PARALLEL_WORKERS = 4
     private const val YT_RANGE_CHUNK_BYTES = 2L * 1024L * 1024L
     private const val YT_PARALLEL_WORKERS = 4
+
+    internal fun isRetryableHttpCode(code: Int): Boolean {
+        return code == 408 || code == 429 || code in 500..599
+    }
+
+    internal fun computeBackoffMs(attempt: Int, baseMs: Long = 250L, maxMs: Long = 4000L): Long {
+        val exp = baseMs shl (attempt - 1).coerceIn(0, 6)
+        val capped = min(exp, maxMs)
+        val jitter = ThreadLocalRandom.current().nextLong(0L, max(capped / 3L, 1L))
+        return capped + jitter
+    }
+
+    class DownloadCancelController(val cancelled: AtomicBoolean = AtomicBoolean(false)) {
+        private val activeCalls = CopyOnWriteArrayList<Call>()
+
+        fun isCancelled(): Boolean = cancelled.get()
+
+        fun track(call: Call): Call {
+            if (cancelled.get()) {
+                call.cancel()
+            } else {
+                activeCalls.add(call)
+            }
+            return call
+        }
+
+        fun untrack(call: Call) {
+            activeCalls.remove(call)
+        }
+
+        fun cancelAll() {
+            cancelled.set(true)
+            for (call in activeCalls) {
+                try {
+                    call.cancel()
+                } catch (_: Exception) {}
+            }
+            activeCalls.clear()
+        }
+    }
+
+    private inline fun <T> executeTracked(
+        client: OkHttpClient,
+        request: Request,
+        controller: DownloadCancelController?,
+        block: (Response) -> T
+    ): T {
+        val call = client.newCall(request)
+        controller?.track(call)
+        return try {
+            call.execute().use(block)
+        } finally {
+            controller?.untrack(call)
+        }
+    }
 
     private val CONTENT_RANGE_TOTAL_PATTERN = Pattern.compile("bytes\\s+\\d+-\\d+/(\\d+)", Pattern.CASE_INSENSITIVE)
 
@@ -85,8 +146,10 @@ object HlsSegmentDownloader {
         task: DownloadTask,
         outputStream: OutputStream,
         listener: DownloadProgressListener?,
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        cancelController: DownloadCancelController? = null
     ) {
+        val controller = cancelController ?: isCancelled?.let { DownloadCancelController(it) }
         task.state = DownloadState.DOWNLOADING
         val countedOut = CountingOutputStream(outputStream)
 
@@ -130,7 +193,7 @@ object HlsSegmentDownloader {
             try {
                 executeStreamDownload(
                     context, client, streamUrl, audioUrl, referer, extraHeaders,
-                    task.quality, countedOut, listener, isCancelled
+                    task.quality, countedOut, listener, isCancelled, controller
                 )
             } catch (e: Exception) {
                 if (isCancelled?.get() == true) throw e
@@ -173,7 +236,7 @@ object HlsSegmentDownloader {
                         try {
                             executeStreamDownload(
                                 context, client, streamUrl, audioUrl, referer, extraHeaders,
-                                task.quality, countedOut, listener, isCancelled
+                                task.quality, countedOut, listener, isCancelled, controller
                             )
                             return@run
                         } catch (retryErr: Exception) {
@@ -191,7 +254,7 @@ object HlsSegmentDownloader {
                     resolveFreshStream()
                     executeStreamDownload(
                         context, client, streamUrl, audioUrl, referer, extraHeaders,
-                        task.quality, countedOut, listener, isCancelled
+                        task.quality, countedOut, listener, isCancelled, controller
                     )
                 } else {
                     throw e
@@ -217,14 +280,15 @@ object HlsSegmentDownloader {
         desiredQuality: String,
         outputStream: OutputStream,
         listener: DownloadProgressListener?,
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        controller: DownloadCancelController? = null
     ) {
         if (ExtractorUtils.isHlsUrl(streamUrl)) {
-            downloadHlsStream(context, client, streamUrl, referer, extraHeaders, desiredQuality, outputStream, listener, isCancelled)
+            downloadHlsStream(context, client, streamUrl, referer, extraHeaders, desiredQuality, outputStream, listener, isCancelled, controller)
         } else if (!audioUrl.isNullOrEmpty()) {
-            downloadMuxedDirectStreams(context, client, streamUrl, audioUrl, referer, extraHeaders, outputStream, listener, isCancelled)
+            downloadMuxedDirectStreams(context, client, streamUrl, audioUrl, referer, extraHeaders, outputStream, listener, isCancelled, controller)
         } else {
-            downloadDirectFile(client, streamUrl, referer, extraHeaders, outputStream, listener, isCancelled)
+            downloadDirectFile(client, streamUrl, referer, extraHeaders, outputStream, listener, isCancelled, controller = controller)
         }
     }
 
@@ -265,15 +329,16 @@ object HlsSegmentDownloader {
         extraHeaders: Map<String, String>,
         out: OutputStream,
         listener: DownloadProgressListener?,
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        controller: DownloadCancelController? = null
     ) {
         val tempVideoFile = File.createTempFile("yt_video_", ".mp4", context.cacheDir)
         val tempAudioFile = File.createTempFile("yt_audio_", ".mp4", context.cacheDir)
         try {
-            downloadDirectToFile(client, videoUrl, referer, extraHeaders, tempVideoFile, listener, isCancelled, progressWeight = 0.75f, baseProgress = 0f)
+            downloadDirectToFile(client, videoUrl, referer, extraHeaders, tempVideoFile, listener, isCancelled, progressWeight = 0.75f, baseProgress = 0f, controller = controller)
             if (isCancelled?.get() == true) return
 
-            downloadDirectToFile(client, audioUrl, referer, extraHeaders, tempAudioFile, listener, isCancelled, progressWeight = 0.20f, baseProgress = 75f)
+            downloadDirectToFile(client, audioUrl, referer, extraHeaders, tempAudioFile, listener, isCancelled, progressWeight = 0.20f, baseProgress = 75f, controller = controller)
             if (isCancelled?.get() == true) return
 
             listener?.onProgress(95f, "", "Об'єднання відео та аудіо...", 0L, 0L)
@@ -298,11 +363,12 @@ object HlsSegmentDownloader {
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?,
         progressWeight: Float,
-        baseProgress: Float
+        baseProgress: Float,
+        controller: DownloadCancelController? = null
     ) {
         if (!url.contains("googlevideo.com", ignoreCase = true)) {
             FileOutputStream(targetFile).use { fileOut ->
-                downloadDirectFile(client, url, referer, extraHeaders, fileOut, listener, isCancelled, progressWeight, baseProgress)
+                downloadDirectFile(client, url, referer, extraHeaders, fileOut, listener, isCancelled, progressWeight, baseProgress, controller)
             }
             return
         }
@@ -333,7 +399,7 @@ object HlsSegmentDownloader {
         RandomAccessFile(targetFile, "rw").use { raf ->
             val rafLock = Any()
 
-            client.newCall(probeRequest).execute().use { response ->
+            executeTracked(client, probeRequest, controller) { response ->
                 if (!response.isSuccessful || response.body == null) {
                     throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
                 }
@@ -412,8 +478,10 @@ object HlsSegmentDownloader {
                             try {
                                 val reqStart = rangeStart
                                 val req = buildRequestWithHeaders(url, referer, extraHeaders, "bytes=$reqStart-$rangeEnd")
-                                client.newCall(req).execute().use { resp ->
+                                var fatalHttp = false
+                                executeTracked(client, req, controller) { resp ->
                                     if (!resp.isSuccessful || resp.body == null) {
+                                        if (!isRetryableHttpCode(resp.code)) fatalHttp = true
                                         throw IllegalStateException("HTTP помилка ${resp.code} при завантаженні чанка")
                                     }
                                     val buf = ByteArray(64 * 1024)
@@ -432,6 +500,7 @@ object HlsSegmentDownloader {
                                         }
                                     }
                                 }
+                                if (fatalHttp) break
                                 val expected = rangeEnd - rangeStart + 1L
                                 if (isCancelled?.get() != true && firstError.get() == null && offsetInChunk < expected) {
                                     throw IllegalStateException("Неповний чанк ($offsetInChunk/$expected)")
@@ -443,12 +512,17 @@ object HlsSegmentDownloader {
                                     totalDownloaded.addAndGet(-offsetInChunk)
                                 }
                                 chunkErr = e
-                                if (attempt < SEGMENT_MAX_RETRIES && isCancelled?.get() != true && firstError.get() == null) {
+                                val isFatal = e.message?.let { m ->
+                                    m.contains(" 401 ") || m.contains(" 403 ") || m.contains(" 404 ") || m.contains(" 410 ")
+                                } == true
+                                if (!isFatal && attempt < SEGMENT_MAX_RETRIES && isCancelled?.get() != true && firstError.get() == null) {
                                     try {
-                                        Thread.sleep(200L * attempt)
+                                        Thread.sleep(computeBackoffMs(attempt))
                                     } catch (_: InterruptedException) {
                                         return@submit
                                     }
+                                } else if (isFatal) {
+                                    break
                                 }
                             }
                         }
@@ -487,16 +561,17 @@ object HlsSegmentDownloader {
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?,
         progressWeight: Float = 1.0f,
-        baseProgress: Float = 0f
+        baseProgress: Float = 0f,
+        controller: DownloadCancelController? = null
     ) {
         if (url.contains("googlevideo.com", ignoreCase = true)) {
-            downloadDirectRangeStream(client, url, referer, extraHeaders, out, listener, isCancelled, progressWeight, baseProgress)
+            downloadDirectRangeStream(client, url, referer, extraHeaders, out, listener, isCancelled, progressWeight, baseProgress, controller)
             return
         }
 
         val request = buildRequestWithHeaders(url, referer, extraHeaders)
 
-        client.newCall(request).execute().use { response ->
+        executeTracked(client, request, controller) { response ->
             if (!response.isSuccessful || response.body == null) {
                 throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
             }
@@ -551,7 +626,8 @@ object HlsSegmentDownloader {
         listener: DownloadProgressListener?,
         isCancelled: AtomicBoolean?,
         progressWeight: Float,
-        baseProgress: Float
+        baseProgress: Float,
+        controller: DownloadCancelController? = null
     ) {
         val startTime = System.currentTimeMillis()
         var lastUpdate = 0L
@@ -571,7 +647,7 @@ object HlsSegmentDownloader {
             var isChunkedRange = false
 
             var chunkBytesRead = 0L
-            client.newCall(request).execute().use { response ->
+            executeTracked(client, request, controller) { response ->
                 if (!response.isSuccessful || response.body == null) {
                     throw IllegalStateException("HTTP помилка ${response.code} при завантаженні прямого файлу")
                 }
@@ -638,7 +714,8 @@ object HlsSegmentDownloader {
         desiredQuality: String,
         out: OutputStream,
         listener: DownloadProgressListener?,
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        controller: DownloadCancelController? = null
     ) {
         val cleanM3u8Url = ExtractorUtils.stripFragmentHint(m3u8Url)
         val baseUri = URI(cleanM3u8Url)
@@ -647,7 +724,7 @@ object HlsSegmentDownloader {
 
         // 1. Завантажуємо первинний плейлист
         val req = buildRequestWithHeaders(currentPlaylistUrl, referer, extraHeaders)
-        val content = client.newCall(req).execute().use { resp ->
+        val content = executeTracked(client, req, controller) { resp ->
             if (!resp.isSuccessful || resp.body == null) {
                 throw IllegalStateException("Помилка завантаження HLS m3u8 (${resp.code})")
             }
@@ -748,13 +825,13 @@ object HlsSegmentDownloader {
 
             try {
                 FileOutputStream(tempVideoFile).use { videoOut ->
-                    downloadPlaylistSegments(client, currentPlaylistUrl, referer, extraHeaders, videoOut, 0.70f, 0f, listener, isCancelled)
+                    downloadPlaylistSegments(client, currentPlaylistUrl, referer, extraHeaders, videoOut, 0.70f, 0f, listener, isCancelled, controller)
                 }
 
                 if (isCancelled?.get() == true) return
 
                 FileOutputStream(tempAudioFile).use { audioOut ->
-                    downloadPlaylistSegments(client, audioPlaylistUrl, referer, extraHeaders, audioOut, 0.25f, 70f, listener, isCancelled)
+                    downloadPlaylistSegments(client, audioPlaylistUrl, referer, extraHeaders, audioOut, 0.25f, 70f, listener, isCancelled, controller)
                 }
 
                 if (isCancelled?.get() == true) return
@@ -768,7 +845,7 @@ object HlsSegmentDownloader {
             }
         } else {
             // Стандартний сумісний HLS потік (MPEG-TS або єдиний fMP4)
-            downloadPlaylistSegments(client, currentPlaylistUrl, referer, extraHeaders, out, 1.0f, 0f, listener, isCancelled)
+            downloadPlaylistSegments(client, currentPlaylistUrl, referer, extraHeaders, out, 1.0f, 0f, listener, isCancelled, controller)
         }
     }
 
@@ -781,10 +858,11 @@ object HlsSegmentDownloader {
         progressWeight: Float,
         baseProgress: Float,
         listener: DownloadProgressListener?,
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        controller: DownloadCancelController? = null
     ): Long {
         val mediaReq = buildRequestWithHeaders(playlistUrl, referer, extraHeaders)
-        val mediaContent = client.newCall(mediaReq).execute().use { mediaResp ->
+        val mediaContent = executeTracked(client, mediaReq, controller) { mediaResp ->
             if (!mediaResp.isSuccessful || mediaResp.body == null) {
                 throw IllegalStateException("Помилка завантаження медіа-плейлиста HLS (${mediaResp.code})")
             }
@@ -845,7 +923,7 @@ object HlsSegmentDownloader {
         if (!targetInitUrl.isNullOrEmpty()) {
             val initReq = buildRequestWithHeaders(targetInitUrl, referer, extraHeaders)
             try {
-                client.newCall(initReq).execute().use { initResp ->
+                executeTracked(client, initReq, controller) { initResp ->
                     if (initResp.isSuccessful && initResp.body != null) {
                         val initBytes = initResp.body?.bytes()
                         if (initBytes != null && initBytes.isNotEmpty()) {
@@ -863,13 +941,15 @@ object HlsSegmentDownloader {
             throw IllegalStateException("Не знайдено відео-сегментів у HLS плейлисті")
         }
 
-        // Кеш AES-128 ключів (підтримка ротації ключів у плейлисті)
-        val aesKeyCache = mutableMapOf<String, ByteArray>()
+        // Потокобезпечний кеш AES-128 ключів (підтримка ротації ключів у плейлисті)
+        val aesKeyCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
         fun getAesKey(keyUrl: String): ByteArray {
-            return aesKeyCache.getOrPut(keyUrl) {
+            aesKeyCache[keyUrl]?.let { return it }
+            synchronized(aesKeyCache) {
+                aesKeyCache[keyUrl]?.let { return it }
                 val keyReq = buildRequestWithHeaders(keyUrl, referer, extraHeaders)
                 var fetched: ByteArray? = null
-                client.newCall(keyReq).execute().use { keyResp ->
+                executeTracked(client, keyReq, controller) { keyResp ->
                     if (keyResp.isSuccessful && keyResp.body != null) {
                         fetched = keyResp.body?.bytes()
                     }
@@ -878,7 +958,8 @@ object HlsSegmentDownloader {
                 if (valid == null || valid.size != 16) {
                     throw IllegalStateException("Не вдалося завантажити ключ шифрування AES-128")
                 }
-                valid
+                aesKeyCache[keyUrl] = valid
+                return valid
             }
         }
 
@@ -886,38 +967,82 @@ object HlsSegmentDownloader {
         var lastUpdate = 0L
         var failedSegments = 0
 
-        for (i in 0 until totalSegments) {
-            if (isCancelled?.get() == true) break
+        // Паралельне завантаження HLS сегментів із ковзним вікном та строгим порядком запису
+        val workerCount = min(HLS_PARALLEL_WORKERS, totalSegments.coerceAtLeast(1))
+        val windowSize = workerCount * 2
+        val pool = Executors.newFixedThreadPool(workerCount)
+        val pendingFutures = ArrayDeque<Pair<Int, Future<ByteArray?>>>(windowSize)
+        var nextSubmitIdx = 0
 
-            val (segUrl, keySpec) = segments[i]
-            val segBytes = downloadSegmentWithRetry(client, segUrl, referer, extraHeaders, isCancelled)
-            if (segBytes != null && segBytes.isNotEmpty()) {
-                val finalBytes = if (keySpec.isAes128 && !keySpec.keyUrl.isNullOrEmpty()) {
+        fun submitNext() {
+            val idx = nextSubmitIdx++
+            val (segUrl, keySpec) = segments[idx]
+            val fut = pool.submit<ByteArray?> {
+                if (isCancelled?.get() == true) return@submit null
+                val rawBytes = downloadSegmentWithRetry(client, segUrl, referer, extraHeaders, isCancelled, controller)
+                    ?: return@submit null
+                if (keySpec.isAes128 && !keySpec.keyUrl.isNullOrEmpty()) {
                     val keyBytes = getAesKey(keySpec.keyUrl)
-                    decryptAes128(segBytes, keyBytes, keySpec.ivHex, mediaSequence + i)
+                    decryptAes128(rawBytes, keyBytes, keySpec.ivHex, mediaSequence + idx)
                 } else {
-                    segBytes
+                    rawBytes
                 }
-                out.write(finalBytes)
-                totalDownloaded += finalBytes.size
-            } else if (isCancelled?.get() != true) {
-                failedSegments++
+            }
+            pendingFutures.addLast(idx to fut)
+        }
+
+        try {
+            while (nextSubmitIdx < totalSegments && pendingFutures.size < windowSize) {
+                submitNext()
             }
 
-            val now = System.currentTimeMillis()
-            if (now - lastUpdate >= PROGRESS_THROTTLE_MS || i == totalSegments - 1) {
-                lastUpdate = now
-                val localPct = ((i + 1) * 100f) / totalSegments
-                val currentPercent = baseProgress + (localPct * progressWeight)
+            while (pendingFutures.isNotEmpty()) {
+                if (isCancelled?.get() == true) break
+                val (i, fut) = pendingFutures.removeFirst()
+                if (nextSubmitIdx < totalSegments && isCancelled?.get() != true) {
+                    submitNext()
+                }
 
-                val elapsedSec = max((now - startTime) / 1000.0, 0.1)
-                val speedBytes = totalDownloaded / elapsedSec
-                val speedStr = formatSpeed(speedBytes)
-                val remainingSegs = totalSegments - (i + 1)
-                val segPerSec = (i + 1) / elapsedSec
-                val etaStr = formatEta((remainingSegs / max(segPerSec, 0.1)).toLong())
+                val finalBytes = try {
+                    fut.get()
+                } catch (e: java.util.concurrent.ExecutionException) {
+                    val cause = e.cause
+                    if (cause is IllegalStateException) throw cause
+                    null
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    break
+                }
 
-                listener?.onProgress(currentPercent, speedStr, etaStr, totalDownloaded, 0L)
+                if (finalBytes != null && finalBytes.isNotEmpty()) {
+                    out.write(finalBytes)
+                    totalDownloaded += finalBytes.size
+                } else if (isCancelled?.get() != true) {
+                    failedSegments++
+                }
+
+                val now = System.currentTimeMillis()
+                if (now - lastUpdate >= PROGRESS_THROTTLE_MS || i == totalSegments - 1) {
+                    lastUpdate = now
+                    val localPct = ((i + 1) * 100f) / totalSegments
+                    val currentPercent = baseProgress + (localPct * progressWeight)
+
+                    val elapsedSec = max((now - startTime) / 1000.0, 0.1)
+                    val speedBytes = totalDownloaded / elapsedSec
+                    val speedStr = formatSpeed(speedBytes)
+                    val remainingSegs = totalSegments - (i + 1)
+                    val segPerSec = (i + 1) / elapsedSec
+                    val etaStr = formatEta((remainingSegs / max(segPerSec, 0.1)).toLong())
+
+                    listener?.onProgress(currentPercent, speedStr, etaStr, totalDownloaded, 0L)
+                }
+            }
+        } finally {
+            pool.shutdownNow()
+            try {
+                pool.awaitTermination(3, TimeUnit.SECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
             }
         }
 
@@ -933,24 +1058,29 @@ object HlsSegmentDownloader {
         segUrl: String,
         referer: String?,
         extraHeaders: Map<String, String> = emptyMap(),
-        isCancelled: AtomicBoolean?
+        isCancelled: AtomicBoolean?,
+        controller: DownloadCancelController? = null
     ): ByteArray? {
         val segReq = buildRequestWithHeaders(segUrl, referer, extraHeaders)
         for (attempt in 1..SEGMENT_MAX_RETRIES) {
             if (isCancelled?.get() == true) return null
+            var shouldStopRetrying = false
             try {
-                client.newCall(segReq).execute().use { segResp ->
+                executeTracked(client, segReq, controller) { segResp ->
                     if (segResp.isSuccessful && segResp.body != null) {
                         val bytes = segResp.body?.bytes()
                         if (bytes != null && bytes.isNotEmpty()) {
                             return bytes
                         }
+                    } else if (!isRetryableHttpCode(segResp.code)) {
+                        shouldStopRetrying = true
                     }
                 }
             } catch (_: Exception) {}
-            if (attempt < SEGMENT_MAX_RETRIES) {
+            if (shouldStopRetrying) return null
+            if (attempt < SEGMENT_MAX_RETRIES && isCancelled?.get() != true) {
                 try {
-                    Thread.sleep(250L * attempt)
+                    Thread.sleep(computeBackoffMs(attempt))
                 } catch (_: InterruptedException) {
                     return null
                 }

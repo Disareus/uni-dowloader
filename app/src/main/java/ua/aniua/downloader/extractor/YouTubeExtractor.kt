@@ -40,9 +40,32 @@ object YouTubeExtractor {
     private const val DEFAULT_MWEB_CLIENT_VERSION = "2.20250312.04.00"
     private const val STREAM_CACHE_TTL_MS = 5 * 60 * 1000L
     private const val VISITOR_DATA_TTL_MS = 30 * 60 * 1000L
+    private const val MAX_CACHE_ENTRIES = 64
     private const val CPN_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 
     private val random = SecureRandom()
+
+    private class BoundedLruCache<K, V>(private val maxEntries: Int) {
+        private val map = object : LinkedHashMap<K, V>(maxEntries + 1, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean {
+                return size > maxEntries
+            }
+        }
+
+        @Synchronized
+        operator fun get(key: K): V? = map[key]
+
+        @Synchronized
+        operator fun set(key: K, value: V) {
+            map[key] = value
+        }
+
+        @Synchronized
+        fun remove(key: K): V? = map.remove(key)
+
+        @Synchronized
+        fun size(): Int = map.size
+    }
 
     private data class CachedVideoStreams(
         val qualities: List<StreamQuality>,
@@ -54,8 +77,8 @@ object YouTubeExtractor {
         val qualities: List<StreamQuality>
     )
 
-    private val streamCache = ConcurrentHashMap<String, CachedVideoStreams>()
-    private val unverifiedHigherQualityVideos = ConcurrentHashMap<String, Boolean>()
+    private val streamCache = BoundedLruCache<String, CachedVideoStreams>(MAX_CACHE_ENTRIES)
+    private val unverifiedHigherQualityVideos = BoundedLruCache<String, Boolean>(MAX_CACHE_ENTRIES)
 
     @Volatile
     private var cachedVisionOsVisitorData: Pair<String, Long>? = null

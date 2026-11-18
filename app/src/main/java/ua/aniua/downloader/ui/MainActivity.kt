@@ -1,11 +1,14 @@
 package ua.aniua.downloader.ui
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
@@ -24,8 +27,10 @@ import android.webkit.WebViewClient
 import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.bumptech.glide.Glide
@@ -65,18 +70,39 @@ import java.util.regex.Pattern
 class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener, ShortcutAdapter.OnShortcutClickListener {
 
     private lateinit var binding: ActivityMainBinding
+    private lateinit var viewModel: MainViewModel
     private lateinit var episodeAdapter: EpisodeAdapter
     private lateinit var shortcutAdapter: ShortcutAdapter
     private lateinit var shortcutRepository: ShortcutRepository
     private lateinit var httpClient: OkHttpClient
     private lateinit var queueManager: DownloadQueueManager
 
-    private var currentMediaInfo: MediaInfo? = null
-    private var currentStudio: DubStudio? = null
-    private var currentPlayer: PlayerSource? = null
-    private var allSelected = false
-    private var isDescExpanded = false
+    private var currentMediaInfo: MediaInfo?
+        get() = viewModel.currentMediaInfo
+        set(value) { viewModel.currentMediaInfo = value }
+    private var currentStudio: DubStudio?
+        get() = viewModel.currentStudio
+        set(value) {
+            viewModel.currentStudio = value
+            viewModel.currentStudioId = value?.id
+        }
+    private var currentPlayer: PlayerSource?
+        get() = viewModel.currentPlayer
+        set(value) {
+            viewModel.currentPlayer = value
+            viewModel.currentPlayerId = value?.id
+        }
+    private var allSelected: Boolean
+        get() = viewModel.allSelected
+        set(value) { viewModel.allSelected = value }
+    private var isDescExpanded: Boolean
+        get() = viewModel.isDescExpanded
+        set(value) { viewModel.isDescExpanded = value }
     private var analyzeJob: Job? = null
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* Permission granted or denied; foreground service still runs */ }
 
     private val interceptedBrowserMediaUrls = java.util.Collections.synchronizedList(mutableListOf<String>())
 
@@ -93,6 +119,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        viewModel = ViewModelProvider(this)[MainViewModel::class.java]
         httpClient = NetworkSecurityManager.getInstance(this).hardenedHttpClient
         queueManager = DownloadQueueManager.getInstance(this)
         shortcutRepository = ShortcutRepository(this)
@@ -103,7 +130,25 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         setupListeners()
         setupBackNavigation()
         performSecurityAuditAsync()
+        restoreStateFromViewModel()
         handleIncomingIntent(intent)
+    }
+
+    private fun restoreStateFromViewModel() {
+        if (viewModel.lastUrl.isNotEmpty() && binding.etUrl.text.isNullOrEmpty()) {
+            binding.etUrl.setText(viewModel.lastUrl)
+        }
+        viewModel.currentMediaInfo?.let { savedInfo ->
+            displayMediaInfo(savedInfo, preserveSelection = true)
+        }
+    }
+
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -506,6 +551,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun startAnalyze(url: String, preloadedHtml: String? = null) {
+        viewModel.lastUrl = url
         analyzeJob?.cancel()
         binding.btnAnalyze.isEnabled = false
         binding.progressAnalyze.visibility = View.VISIBLE
@@ -596,7 +642,8 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         }
     }
 
-    private fun displayMediaInfo(info: MediaInfo) {
+    private fun displayMediaInfo(info: MediaInfo, preserveSelection: Boolean = false) {
+        val savedStudioId = if (preserveSelection) viewModel.currentStudioId else null
         currentMediaInfo = info
         binding.containerEmptyState.visibility = View.GONE
         binding.containerMediaDetail.visibility = View.VISIBLE
@@ -607,13 +654,17 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
         binding.tvBadgeSite.text = info.siteType.uppercase()
 
         val descText = info.description?.takeIf { it.isNotBlank() } ?: "Немає опису"
-        isDescExpanded = false
-        binding.tvMediaDesc.maxLines = 3
+        if (!preserveSelection) {
+            isDescExpanded = false
+        }
+        binding.tvMediaDesc.maxLines = if (isDescExpanded) Int.MAX_VALUE else 3
         binding.tvMediaDesc.text = descText
         binding.tvMediaDesc.post {
             val isEllipsized = (binding.tvMediaDesc.layout?.lineCount ?: 0) > 3 || descText.length > 140
             binding.tvDescToggle.visibility = if (isEllipsized) View.VISIBLE else View.GONE
-            binding.tvDescToggle.text = getString(R.string.desc_expand_more)
+            binding.tvDescToggle.text = getString(
+                if (isDescExpanded) R.string.desc_collapse else R.string.desc_expand_more
+            )
         }
 
         if (!info.rating.isNullOrEmpty()) {
@@ -648,6 +699,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
 
         binding.chipGroupStudios.removeAllViews()
         if (studios.isNotEmpty()) {
+            val targetIdx = studios.indexOfFirst { it.id == savedStudioId }.takeIf { it >= 0 } ?: 0
             for (i in studios.indices) {
                 val studio = studios[i]
                 val chip = layoutInflater.inflate(R.layout.item_chip_studio, binding.chipGroupStudios, false) as Chip
@@ -655,7 +707,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
                 chip.id = View.generateViewId()
                 chip.setOnClickListener { selectStudio(studio) }
                 binding.chipGroupStudios.addView(chip)
-                if (i == 0) {
+                if (i == targetIdx) {
                     chip.isChecked = true
                     selectStudio(studio)
                 }
@@ -964,6 +1016,7 @@ class MainActivity : AppCompatActivity(), EpisodeAdapter.OnEpisodeActionListener
     }
 
     private fun startDownloadService(task: DownloadTask) {
+        ensureNotificationPermission()
         val svcIntent = Intent(this, DownloadService::class.java).apply {
             action = DownloadService.ACTION_START_DOWNLOAD
             putExtra(DownloadService.EXTRA_TASK, task)

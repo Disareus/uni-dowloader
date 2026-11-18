@@ -14,6 +14,8 @@ import android.webkit.WebViewClient
 import com.google.gson.JsonParser
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
@@ -29,6 +31,9 @@ import kotlin.coroutines.resume
  * and intercepting dynamically requested .m3u8 / .mp4 streams.
  */
 object WebViewStreamResolver {
+
+    // Обмежує кількість одночасних headless WebView до 1, запобігаючи OOM при пакетному завантаженні
+    private val webViewMutex = Mutex()
 
     data class RenderedPageResult(
         val html: String = "",
@@ -70,7 +75,8 @@ object WebViewStreamResolver {
         context: Context,
         url: String,
         timeoutMs: Long = 12000L
-    ): RenderedPageResult = withContext(Dispatchers.Main) {
+    ): RenderedPageResult = webViewMutex.withLock {
+        withContext(Dispatchers.Main) {
         withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 val mainHandler = Handler(Looper.getMainLooper())
@@ -167,6 +173,7 @@ object WebViewStreamResolver {
                 webView.loadUrl(url)
             }
         } ?: RenderedPageResult(finalUrl = url)
+        }
     }
 
     suspend fun resolveStreamViaWebView(
@@ -174,7 +181,8 @@ object WebViewStreamResolver {
         pageUrl: String,
         referer: String?,
         timeoutMs: Long = 15000L
-    ): List<StreamQuality> = withContext(Dispatchers.Main) {
+    ): List<StreamQuality> = webViewMutex.withLock {
+        withContext(Dispatchers.Main) {
         withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
                 val mainHandler = Handler(Looper.getMainLooper())
@@ -300,6 +308,7 @@ object WebViewStreamResolver {
                 }
             }
         } ?: emptyList()
+        }
     }
 
     private data class YouTubeWebContext(
@@ -319,8 +328,9 @@ object WebViewStreamResolver {
         val videoId = YouTubeExtractor.extractVideoId(pageUrl) ?: return emptyList()
         val watchUrl = "https://m.youtube.com/watch?v=$videoId"
 
-        val webCtx = withContext(Dispatchers.Main) {
-            withTimeoutOrNull(timeoutMs) {
+        val webCtx = webViewMutex.withLock {
+            withContext(Dispatchers.Main) {
+                withTimeoutOrNull(timeoutMs) {
                 suspendCancellableCoroutine<YouTubeWebContext?> { cont ->
                     val mainHandler = Handler(Looper.getMainLooper())
                     val completed = AtomicBoolean(false)
@@ -477,6 +487,7 @@ object WebViewStreamResolver {
 
                     webView.loadUrl(watchUrl)
                 }
+            }
             }
         } ?: return emptyList()
 

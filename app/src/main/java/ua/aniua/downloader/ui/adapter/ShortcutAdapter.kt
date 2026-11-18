@@ -5,6 +5,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.bumptech.glide.load.DataSource
@@ -30,8 +31,23 @@ class ShortcutAdapter(
     private var shortcuts: List<SiteShortcut> = emptyList()
 
     fun setShortcuts(items: List<SiteShortcut>) {
-        shortcuts = items
-        notifyDataSetChanged()
+        val oldList = shortcuts
+        val newList = items.toList()
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldList.size + 1
+            override fun getNewListSize(): Int = newList.size + 1
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                if (oldItemPosition == 0 || newItemPosition == 0) return oldItemPosition == newItemPosition
+                return oldList[oldItemPosition - 1].id == newList[newItemPosition - 1].id
+            }
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                if (oldItemPosition == 0 && newItemPosition == 0) return true
+                return oldList[oldItemPosition - 1] == newList[newItemPosition - 1]
+            }
+        })
+        shortcuts = newList
+        diff.dispatchUpdatesTo(this)
     }
 
     override fun getItemCount(): Int = shortcuts.size + 1

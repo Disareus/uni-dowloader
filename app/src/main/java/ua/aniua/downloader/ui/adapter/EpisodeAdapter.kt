@@ -2,6 +2,7 @@ package ua.aniua.downloader.ui.adapter
 
 import android.view.LayoutInflater
 import android.view.ViewGroup
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import ua.aniua.downloader.databinding.ItemEpisodeBinding
 import ua.aniua.downloader.model.EpisodeItem
@@ -9,6 +10,10 @@ import ua.aniua.downloader.model.EpisodeItem
 class EpisodeAdapter(
     private val listener: OnEpisodeActionListener
 ) : RecyclerView.Adapter<EpisodeAdapter.ViewHolder>() {
+
+    companion object {
+        private const val PAYLOAD_SELECTION = "selection"
+    }
 
     interface OnEpisodeActionListener {
         fun onPlayPreview(episode: EpisodeItem)
@@ -19,8 +24,26 @@ class EpisodeAdapter(
     private var episodes: List<EpisodeItem> = emptyList()
 
     fun setEpisodes(items: List<EpisodeItem>?) {
-        episodes = items ?: emptyList()
-        notifyDataSetChanged()
+        val newList = items?.toList() ?: emptyList()
+        val oldList = episodes
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = oldList.size
+            override fun getNewListSize(): Int = newList.size
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
+                oldList[oldItemPosition].id == newList[newItemPosition].id
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val o = oldList[oldItemPosition]
+                val n = newList[newItemPosition]
+                return o.title == n.title &&
+                    o.number == n.number &&
+                    o.season == n.season &&
+                    o.iframeUrl == n.iframeUrl &&
+                    o.isSelected == n.isSelected
+            }
+        })
+        episodes = newList
+        diff.dispatchUpdatesTo(this)
         listener.onSelectionChanged(getSelectedEpisodes().size)
     }
 
@@ -28,7 +51,9 @@ class EpisodeAdapter(
         for (item in episodes) {
             item.isSelected = select
         }
-        notifyDataSetChanged()
+        if (episodes.isNotEmpty()) {
+            notifyItemRangeChanged(0, episodes.size, PAYLOAD_SELECTION)
+        }
         listener.onSelectionChanged(getSelectedEpisodes().size)
     }
 
@@ -37,6 +62,21 @@ class EpisodeAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val binding = ItemEpisodeBinding.inflate(LayoutInflater.from(parent.context), parent, false)
         return ViewHolder(binding)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains(PAYLOAD_SELECTION)) {
+            val item = episodes[position]
+            val b = holder.binding
+            b.cbEpisodeSelect.setOnCheckedChangeListener(null)
+            b.cbEpisodeSelect.isChecked = item.isSelected
+            b.cbEpisodeSelect.setOnCheckedChangeListener { _, checked ->
+                item.isSelected = checked
+                listener.onSelectionChanged(getSelectedEpisodes().size)
+            }
+            return
+        }
+        onBindViewHolder(holder, position)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {

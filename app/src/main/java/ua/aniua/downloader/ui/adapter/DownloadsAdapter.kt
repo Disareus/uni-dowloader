@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.RecyclerView
 import ua.aniua.downloader.R
 import ua.aniua.downloader.databinding.ItemDownloadBinding
@@ -15,6 +16,10 @@ class DownloadsAdapter(
     private val listener: OnDownloadActionListener
 ) : RecyclerView.Adapter<DownloadsAdapter.ViewHolder>() {
 
+    companion object {
+        private const val PAYLOAD_PROGRESS = "progress_only"
+    }
+
     interface OnDownloadActionListener {
         fun onCancel(task: DownloadTask)
         fun onRetry(task: DownloadTask)
@@ -25,16 +30,41 @@ class DownloadsAdapter(
     private val tasks = mutableListOf<DownloadTask>()
 
     fun setTasks(items: List<DownloadTask>?) {
+        val newList = items?.toList() ?: emptyList()
+        val diff = DiffUtil.calculateDiff(object : DiffUtil.Callback() {
+            override fun getOldListSize(): Int = tasks.size
+            override fun getNewListSize(): Int = newList.size
+            override fun areItemsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean =
+                tasks[oldItemPosition].id == newList[newItemPosition].id
+
+            override fun areContentsTheSame(oldItemPosition: Int, newItemPosition: Int): Boolean {
+                val o = tasks[oldItemPosition]
+                val n = newList[newItemPosition]
+                return o.state == n.state &&
+                    o.progress == n.progress &&
+                    o.speed == n.speed &&
+                    o.eta == n.eta &&
+                    o.downloadedBytes == n.downloadedBytes &&
+                    o.totalBytes == n.totalBytes &&
+                    o.errorMessage == n.errorMessage &&
+                    o.savedFilePath == n.savedFilePath
+            }
+        })
         tasks.clear()
-        if (items != null) tasks.addAll(items)
-        notifyDataSetChanged()
+        tasks.addAll(newList)
+        diff.dispatchUpdatesTo(this)
     }
 
     fun updateTask(task: DownloadTask) {
         val idx = tasks.indexOfFirst { it.id == task.id }
         if (idx != -1) {
+            val prev = tasks[idx]
             tasks[idx] = task
-            notifyItemChanged(idx)
+            if (prev.state == task.state && task.state == DownloadState.DOWNLOADING) {
+                notifyItemChanged(idx, PAYLOAD_PROGRESS)
+            } else {
+                notifyItemChanged(idx)
+            }
         } else {
             tasks.add(0, task)
             notifyItemInserted(0)
@@ -52,6 +82,43 @@ class DownloadsAdapter(
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
         val binding = ItemDownloadBinding.inflate(LayoutInflater.from(parent.context), parent, false)
         return ViewHolder(binding)
+    }
+
+    override fun onBindViewHolder(holder: ViewHolder, position: Int, payloads: MutableList<Any>) {
+        if (payloads.contains(PAYLOAD_PROGRESS)) {
+            val task = tasks[position]
+            val b = holder.binding
+            bindProgressFields(b, task)
+            return
+        }
+        onBindViewHolder(holder, position)
+    }
+
+    private fun bindProgressFields(b: ItemDownloadBinding, task: DownloadTask) {
+        b.tvDlSubtitle.text = buildString {
+            if (task.studioName.isNotEmpty() && task.studioName != "Оригінал") {
+                append(task.studioName)
+                append(" • ")
+            }
+            append(task.format.uppercase(Locale.US))
+            if (task.downloadedBytes > 0) {
+                append(" • ")
+                append(formatBytes(task.downloadedBytes))
+                if (task.totalBytes > 0) {
+                    append(" / ")
+                    append(formatBytes(task.totalBytes))
+                }
+            }
+        }
+        b.tvDlPercent.text = String.format(Locale.US, "%.1f%%", task.progress)
+        b.progressDl.progress = task.progress.toInt()
+        if (task.state == DownloadState.DOWNLOADING) {
+            val speedEta = listOf(task.speed, task.eta.takeIf { it.isNotEmpty() }?.let { "ETA: $it" })
+                .filterNotNull()
+                .filter { it.isNotEmpty() }
+                .joinToString(" • ")
+            b.tvDlSpeedEta.text = speedEta.ifEmpty { "Завантаження…" }
+        }
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
